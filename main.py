@@ -1,578 +1,399 @@
 # main.py
 # pip install pyTelegramBotAPI
 
+import re
 import telebot
 from telebot import types
-import os
 
 TOKEN = "YOUR_BOT_TOKEN_HERE"
-CHANNELS_FILE = "channels.txt"
 
 bot = telebot.TeleBot(TOKEN, parse_mode="HTML")
 
-# user_id -> draft data
-user_states = {}
+user_states = {}      # user_id -> state dict
+inline_answers = {}   # btn_id -> answer text
 
-# =======================
-#  KANALLAR BILAN ISHLASH
-# =======================
 
-def load_channels():
-    channels = []
-    if not os.path.exists(CHANNELS_FILE):
-        return channels
-    with open(CHANNELS_FILE, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            parts = line.split("|", 2)
-            if len(parts) == 3:
-                ch_id, title, username = parts
-            elif len(parts) == 2:
-                ch_id, title = parts
-                username = ""
-            else:
-                continue
-            channels.append({
-                "id": int(ch_id),
-                "title": title,
-                "username": username
-            })
-    return channels
-
-def save_channel(chat_id: int, title: str, username: str):
-    channels = load_channels()
-    for ch in channels:
-        if ch["id"] == chat_id:
-            return
-    with open(CHANNELS_FILE, "a", encoding="utf-8") as f:
-        f.write(f"{chat_id}|{title}|{username or ''}\n")
-
-# /register ni kanal ichida yozish orqali kanalni ulash
-@bot.message_handler(commands=["register"])
-def register_channel(message: telebot.types.Message):
-    if message.chat.type not in ["channel", "supergroup"]:
-        return
-    # faqat kanal uchun ishlatamiz
-    if message.chat.type == "channel":
-        save_channel(message.chat.id, message.chat.title or "No title", message.chat.username or "")
-        try:
-            bot.delete_message(message.chat.id, message.message_id)
-        except:
-            pass
-        text = "Kanal botga ulandi. Endi bot orqali post yaratishingiz mumkin."
-        bot.send_message(message.chat.id, text)
-    else:
-        # agar supergroup bo'lsa, e'tiborsiz qoldiramiz
-        return
-
-# =======================
-#  FOYDALANUVCHI HOLATI
-# =======================
-
-def reset_user_state(user_id):
-    user_states[user_id] = {
-        "step": None,
-        "channel_id": None,
-        "posts": [],  # har bir element: {"type": "text/photo/video/...", "data": ..., "caption": str, "buttons": [], "inline_buttons": [], "silent": False}
-    }
-
-def get_user_state(user_id):
+def get_state(user_id):
     if user_id not in user_states:
-        reset_user_state(user_id)
+        user_states[user_id] = {
+            "step": "waiting_link",
+            "target_chat_id": None,
+            "target_message_id": None,
+            "draft": None,          # {"type","data","caption"}
+            "buttons": [],          # [{"text","url"}]
+            "inline_buttons": []    # [{"id","text"}]
+        }
     return user_states[user_id]
 
-# =======================
-#  ASOSIY /start
-# =======================
+
+def reset_state(user_id):
+    if user_id in user_states:
+        user_states.pop(user_id, None)
+
 
 @bot.message_handler(commands=["start"])
-def start(message: telebot.types.Message):
+def cmd_start(message: telebot.types.Message):
     if message.chat.type != "private":
         return
-    state = get_user_state(message.from_user.id)
-    state["step"] = None
-
-    text = (
-        "Salom, bugun ham post tayyorlaymizmi yoki rejalashtirilgan postlarni to‘g‘rilamoqchimisiz?"
+    reset_state(message.from_user.id)
+    get_state(message.from_user.id)
+    bot.send_message(
+        message.chat.id,
+        "Post havolasini yuboring (kanaldagi post linki)."
     )
-    kb = types.InlineKeyboardMarkup()
-    kb.add(
-        types.InlineKeyboardButton("Post yaratish", callback_data="main_post_create"),
-        types.InlineKeyboardButton("Rejalar", callback_data="main_rejalar")
-    )
-    bot.send_message(message.chat.id, text, reply_markup=kb)
 
-# =======================
-#  ASOSIY MENYU CALLBACK
-# =======================
 
-@bot.callback_query_handler(func=lambda c: c.data.startswith("main_"))
-def main_menu_callback(call: telebot.types.CallbackQuery):
-    user_id = call.from_user.id
-    state = get_user_state(user_id)
+def parse_post_link(text: str):
+    # public: https://t.me/username/123
+    m = re.search(r"t\.me/([\w_]+)/(\d+)", text)
+    if m and m.group(1) != "c":
+        username = m.group(1)
+        msg_id = int(m.group(2))
+        chat = bot.get_chat(username)
+        return chat.id, msg_id
 
-    if call.data == "main_post_create":
-        # kanal tanlash sahifasi
-        state["step"] = "choose_channel"
-        show_channels_page(call.message, user_id, page=0)
-    elif call.data == "main_rejalar":
-        bot.answer_callback_query(call.id, "Rejalar hozircha yoq (kechiktirish o‘chirib tashlangan).")
-    else:
-        bot.answer_callback_query(call.id)
+    # private: https://t.me/c/123456789/10
+    m2 = re.search(r"t\.me/c/(\d+)/(\d+)", text)
+    if m2:
+        internal_id = int(m2.group(1))
+        msg_id = int(m2.group(2))
+        chat_id = -100 * internal_id
+        return chat_id, msg_id
 
-# =======================
-#  KANAL TANLASH SAHIFASI
-# =======================
+    return None, None
 
-def show_channels_page(message, user_id, page=0):
-    channels = load_channels()
-    if not channels:
-        text = (
-            "Hali birorta kanal ulanmagan.\n\n"
-            "Kanalga botni admin qiling va kanal ichida /register yozing."
-        )
-        bot.edit_message_text(
-            text,
-            chat_id=message.chat.id,
-            message_id=message.message_id
-        )
-        return
 
-    per_page = 10
-    start_idx = page * per_page
-    end_idx = start_idx + per_page
-    page_channels = channels[start_idx:end_idx]
-
-    kb = types.InlineKeyboardMarkup(row_width=2)
-    for ch in page_channels:
-        title = ch["title"]
-        btn_text = title
-        kb.add(types.InlineKeyboardButton(btn_text, callback_data=f"choose_channel:{ch['id']}"))
-
-    nav_row = []
-    if page > 0:
-        nav_row.append(types.InlineKeyboardButton("⬅️ Orqaga", callback_data=f"channels_page:{page-1}"))
-    if end_idx < len(channels):
-        nav_row.append(types.InlineKeyboardButton("Oldinga ➡️", callback_data=f"channels_page:{page+1}"))
-    if nav_row:
-        kb.row(*nav_row)
-
-    kb.row(types.InlineKeyboardButton("Asosiy menyu", callback_data="back_to_main"))
-
-    text = "Qaysi kanalga post yaratmoqchisiz?"
-    try:
-        bot.edit_message_text(
-            text,
-            chat_id=message.chat.id,
-            message_id=message.message_id,
-            reply_markup=kb
-        )
-    except:
-        bot.send_message(message.chat.id, text, reply_markup=kb)
-
-@bot.callback_query_handler(func=lambda c: c.data.startswith("channels_page:") or c.data.startswith("choose_channel:") or c.data == "back_to_main")
-def channels_callback(call: telebot.types.CallbackQuery):
-    user_id = call.from_user.id
-    state = get_user_state(user_id)
-
-    if call.data == "back_to_main":
-        state["step"] = None
-        bot.delete_message(call.message.chat.id, call.message.message_id)
-        start(call.message)
-        return
-
-    if call.data.startswith("channels_page:"):
-        page = int(call.data.split(":")[1])
-        show_channels_page(call.message, user_id, page)
-        return
-
-    if call.data.startswith("choose_channel:"):
-        ch_id = int(call.data.split(":")[1])
-        state["channel_id"] = ch_id
-        state["posts"] = []
-        state["step"] = "post_menu"
-
-        text = f"{ch_id} kanaliga haqiqatdan ham habar yubormoqchimisiz?\n\nEndi post yaratish bo‘limi."
-        kb = post_menu_keyboard()
-        bot.edit_message_text(
-            text,
-            chat_id=call.message.chat.id,
-            message_id=call.message.message_id,
-            reply_markup=kb
-        )
-
-# =======================
-#  POST MENYUSI
-# =======================
-
-def post_menu_keyboard():
+def build_control_keyboard():
     kb = types.InlineKeyboardMarkup()
     kb.row(
-        types.InlineKeyboardButton("Post yuborish", callback_data="post_add"),
-        types.InlineKeyboardButton("Tahrirlash/Tugma qo‘shish", callback_data="post_edit_menu")
+        types.InlineKeyboardButton("✏️ Tahrirlash", callback_data="edit_content"),
+        types.InlineKeyboardButton("🔗 Tugmalar", callback_data="edit_buttons_menu"),
     )
     kb.row(
-        types.InlineKeyboardButton("Tozalash", callback_data="post_clear"),
-        types.InlineKeyboardButton("O‘chirish", callback_data="post_delete"),
+        types.InlineKeyboardButton("✅ Yuborish", callback_data="send_edit"),
+        types.InlineKeyboardButton("❌ Bekor qilish", callback_data="cancel_edit"),
     )
-    kb.row(
-        types.InlineKeyboardButton("Ko‘rish", callback_data="post_preview_all"),
-        types.InlineKeyboardButton("Yuborish", callback_data="post_send_step1"),
-    )
-    kb.row(types.InlineKeyboardButton("Asosiy menyu", callback_data="back_to_main"))
     return kb
 
-@bot.callback_query_handler(func=lambda c: c.data.startswith("post_"))
-def post_menu_handler(call: telebot.types.CallbackQuery):
-    user_id = call.from_user.id
-    state = get_user_state(user_id)
 
-    if state.get("channel_id") is None:
-        bot.answer_callback_query(call.id, "Avval kanal tanlang.")
-        return
+def build_buttons_markup(state):
+    kb = types.InlineKeyboardMarkup()
+    if state["buttons"]:
+        row = []
+        for b in state["buttons"]:
+            row.append(types.InlineKeyboardButton(b["text"], url=b["url"]))
+        kb.row(*row)
+    if state["inline_buttons"]:
+        row = []
+        for b in state["inline_buttons"]:
+            row.append(types.InlineKeyboardButton(b["text"], callback_data=f"inline_ans:{b['id']}"))
+        kb.row(*row)
+    return kb if (state["buttons"] or state["inline_buttons"]) else None
 
-    if call.data == "post_add":
-        state["step"] = "waiting_post"
-        bot.answer_callback_query(call.id)
-        bot.send_message(call.message.chat.id, "Post yuboring (matn, rasm, video va hokazo).")
-    elif call.data == "post_edit_menu":
-        state["step"] = "edit_menu"
-        show_edit_menu(call.message)
-    elif call.data == "post_clear":
-        state["posts"] = []
-        bot.answer_callback_query(call.id, "Barcha postlar tozalandi.")
-    elif call.data == "post_delete":
-        reset_user_state(user_id)
-        bot.answer_callback_query(call.id, "Post bekor qilindi.")
-        bot.edit_message_text(
-            "Post bekor qilindi.",
-            chat_id=call.message.chat.id,
-            message_id=call.message.message_id
-        )
-    elif call.data == "post_preview_all":
-        bot.answer_callback_query(call.id)
-        preview_all_posts(call.message, state)
-    elif call.data == "post_send_step1":
-        bot.answer_callback_query(call.id)
-        post_send_step1(call.message, state)
-    else:
-        bot.answer_callback_query(call.id)
 
-# =======================
-#  POST QABUL QILISH
-# =======================
-
-@bot.message_handler(content_types=["text", "photo", "video", "document", "animation"])
-def handle_post_content(message: telebot.types.Message):
+@bot.message_handler(content_types=["text"])
+def handle_text(message: telebot.types.Message):
     if message.chat.type != "private":
         return
 
     user_id = message.from_user.id
-    state = get_user_state(user_id)
+    state = get_state(user_id)
 
-    if state.get("step") != "waiting_post":
-        # oddiy foydalanuvchi uchun javob
-        if message.chat.type == "private":
-            bot.reply_to(message, "Ushbu post bot @AniCratorBot tomonidan tayyorlandi.")
+    # inline/url button steps handled separately below
+    if state["step"] in ["waiting_url_title", "waiting_url_url",
+                         "waiting_inline_title", "waiting_inline_text"]:
         return
 
-    post_entry = {
-        "type": None,
-        "data": None,
-        "caption": None,
-        "buttons": [],        # URL tugmalar
-        "inline_buttons": [], # inline text tugmalar
-        "silent": False
-    }
+    if state["step"] == "waiting_link":
+        chat_id, msg_id = parse_post_link(message.text)
+        if not chat_id:
+            bot.reply_to(message, "Havola noto‘g‘ri. Kanaldagi post linkini yuboring.")
+            return
 
-    if message.content_type == "text":
-        post_entry["type"] = "text"
-        post_entry["data"] = message.text
-    elif message.content_type == "photo":
-        post_entry["type"] = "photo"
-        post_entry["data"] = message.photo[-1].file_id
-        post_entry["caption"] = message.caption
+        try:
+            preview = bot.copy_message(
+                chat_id=message.chat.id,
+                from_chat_id=chat_id,
+                message_id=msg_id
+            )
+        except Exception as e:
+            bot.reply_to(message, f"Postni olib bo‘lmadi. Bot kanalga admin qilinganiga ishonch hosil qiling.")
+            return
+
+        draft = {"type": None, "data": None, "caption": None}
+
+        if preview.content_type == "text":
+            draft["type"] = "text"
+            draft["data"] = preview.text
+        elif preview.content_type == "photo":
+            draft["type"] = "photo"
+            draft["data"] = preview.photo[-1].file_id
+            draft["caption"] = preview.caption
+        elif preview.content_type == "video":
+            draft["type"] = "video"
+            draft["data"] = preview.video.file_id
+            draft["caption"] = preview.caption
+        elif preview.content_type == "document":
+            draft["type"] = "document"
+            draft["data"] = preview.document.file_id
+            draft["caption"] = preview.caption
+        elif preview.content_type == "animation":
+            draft["type"] = "animation"
+            draft["data"] = preview.animation.file_id
+            draft["caption"] = preview.caption
+        else:
+            bot.reply_to(message, "Bu turdagi post hozircha qo‘llab-quvvatlanmaydi.")
+            return
+
+        state["target_chat_id"] = chat_id
+        state["target_message_id"] = msg_id
+        state["draft"] = draft
+        state["buttons"] = []
+        state["inline_buttons"] = []
+        state["step"] = "idle"
+
+        bot.send_message(
+            message.chat.id,
+            "Post preview. Endi tahrirlashingiz yoki tugma qo‘shishingiz mumkin.",
+            reply_markup=build_control_keyboard()
+        )
+        return
+
+    if state["step"] == "editing_content":
+        draft = state["draft"]
+        draft["type"] = "text"
+        draft["data"] = message.text
+        draft["caption"] = None
+        state["step"] = "idle"
+        bot.send_message(
+            message.chat.id,
+            "Matn yangilandi.",
+            reply_markup=build_control_keyboard()
+        )
+        return
+
+    bot.reply_to(message, "Post havolasini yuboring yoki /start bosing.")
+
+
+@bot.message_handler(content_types=["photo", "video", "document", "animation"])
+def handle_media(message: telebot.types.Message):
+    if message.chat.type != "private":
+        return
+
+    user_id = message.from_user.id
+    state = get_state(user_id)
+
+    if state["step"] != "editing_content":
+        return
+
+    draft = state["draft"]
+
+    if message.content_type == "photo":
+        draft["type"] = "photo"
+        draft["data"] = message.photo[-1].file_id
+        draft["caption"] = message.caption
     elif message.content_type == "video":
-        post_entry["type"] = "video"
-        post_entry["data"] = message.video.file_id
-        post_entry["caption"] = message.caption
+        draft["type"] = "video"
+        draft["data"] = message.video.file_id
+        draft["caption"] = message.caption
     elif message.content_type == "document":
-        post_entry["type"] = "document"
-        post_entry["data"] = message.document.file_id
-        post_entry["caption"] = message.caption
+        draft["type"] = "document"
+        draft["data"] = message.document.file_id
+        draft["caption"] = message.caption
     elif message.content_type == "animation":
-        post_entry["type"] = "animation"
-        post_entry["data"] = message.animation.file_id
-        post_entry["caption"] = message.caption
+        draft["type"] = "animation"
+        draft["data"] = message.animation.file_id
+        draft["caption"] = message.caption
     else:
-        bot.reply_to(message, "Bu turdagi kontent qo‘llab-quvvatlanmaydi.")
+        bot.reply_to(message, "Bu turdagi media qo‘llab-quvvatlanmaydi.")
         return
 
-    state["posts"].append(post_entry)
-    state["step"] = "post_menu"
-
-    # preview sifatida qayta yuborish
-    bot.send_message(message.chat.id, "Post qabul qilindi. Kanalga shunday ko‘rinishda yuboriladi:")
-    send_single_preview(message.chat.id, post_entry)
-
-    kb = post_menu_keyboard()
-    bot.send_message(message.chat.id, "Post menyusi:", reply_markup=kb)
-
-# =======================
-#  PREVIEW FUNKSIYALARI
-# =======================
-
-def build_markup_for_post(post_entry):
-    kb = types.InlineKeyboardMarkup()
-    # URL tugmalar
-    if post_entry["buttons"]:
-        row = []
-        for btn in post_entry["buttons"]:
-            row.append(types.InlineKeyboardButton(btn["text"], url=btn["url"]))
-        kb.row(*row)
-    # Inline tugmalar (callback)
-    if post_entry["inline_buttons"]:
-        row = []
-        for btn in post_entry["inline_buttons"]:
-            row.append(types.InlineKeyboardButton(btn["text"], callback_data=f"inline_ans:{btn['id']}"))
-        kb.row(*row)
-    return kb if (post_entry["buttons"] or post_entry["inline_buttons"]) else None
-
-def send_single_preview(chat_id, post_entry):
-    markup = build_markup_for_post(post_entry)
-    if post_entry["type"] == "text":
-        bot.send_message(chat_id, post_entry["data"], reply_markup=markup)
-    elif post_entry["type"] == "photo":
-        bot.send_photo(chat_id, post_entry["data"], caption=post_entry["caption"], reply_markup=markup)
-    elif post_entry["type"] == "video":
-        bot.send_video(chat_id, post_entry["data"], caption=post_entry["caption"], reply_markup=markup)
-    elif post_entry["type"] == "document":
-        bot.send_document(chat_id, post_entry["data"], caption=post_entry["caption"], reply_markup=markup)
-    elif post_entry["type"] == "animation":
-        bot.send_animation(chat_id, post_entry["data"], caption=post_entry["caption"], reply_markup=markup)
-
-def preview_all_posts(message, state):
-    posts = state.get("posts", [])
-    if not posts:
-        bot.send_message(message.chat.id, "Hali birorta post qo‘shilmagan.")
-        return
-    bot.send_message(message.chat.id, "Barcha postlar preview holatida:")
-    for p in posts:
-        send_single_preview(message.chat.id, p)
-
-# =======================
-#  YUBORISH BOSQICHLARI
-# =======================
-
-def post_send_step1(message, state):
-    posts = state.get("posts", [])
-    if not posts:
-        bot.send_message(message.chat.id, "Hali post yo‘q.")
-        return
-    text = "Postni hozir tashlamoqchimisiz?"
-    kb = types.InlineKeyboardMarkup()
-    kb.row(
-        types.InlineKeyboardButton("Yuborish", callback_data="send_now_step2"),
-        types.InlineKeyboardButton("Kechiktirish", callback_data="send_delay_disabled"),
-        types.InlineKeyboardButton("Orqaga qaytish", callback_data="send_back_to_post_menu")
+    state["step"] = "idle"
+    bot.send_message(
+        message.chat.id,
+        "Media yangilandi.",
+        reply_markup=build_control_keyboard()
     )
-    bot.send_message(message.chat.id, text, reply_markup=kb)
 
-@bot.callback_query_handler(func=lambda c: c.data.startswith("send_"))
-def send_callback(call: telebot.types.CallbackQuery):
+
+@bot.callback_query_handler(func=lambda c: c.data in ["edit_content", "edit_buttons_menu", "send_edit", "cancel_edit"])
+def control_callback(call: telebot.types.CallbackQuery):
     user_id = call.from_user.id
-    state = get_user_state(user_id)
+    state = get_state(user_id)
 
-    if call.data == "send_back_to_post_menu":
-        kb = post_menu_keyboard()
+    if not state["draft"]:
+        bot.answer_callback_query(call.id, "Avval post havolasini yuboring.")
+        return
+
+    if call.data == "edit_content":
+        state["step"] = "editing_content"
+        bot.answer_callback_query(call.id)
+        bot.send_message(call.message.chat.id, "Yangi matn yoki media yuboring.")
+    elif call.data == "edit_buttons_menu":
+        bot.answer_callback_query(call.id)
+        show_buttons_menu(call.message)
+    elif call.data == "cancel_edit":
+        reset_state(user_id)
+        bot.answer_callback_query(call.id, "Bekor qilindi.")
         bot.edit_message_text(
-            "Post menyusi:",
-            chat_id=call.message.chat.id,
-            message_id=call.message.message_id,
-            reply_markup=kb
-        )
-    elif call.data == "send_delay_disabled":
-        bot.answer_callback_query(call.id, "Kechiktirish o‘chirib tashlangan.")
-    elif call.data == "send_now_step2":
-        text = "Haqiqatdan ham shu habar(lar)ni yubormoqchimisiz?"
-        kb = types.InlineKeyboardMarkup()
-        kb.row(
-            types.InlineKeyboardButton("Yuborish", callback_data="send_confirm"),
-            types.InlineKeyboardButton("Orqaga qaytish", callback_data="send_back_to_step1")
-        )
-        bot.edit_message_text(
-            text,
-            chat_id=call.message.chat.id,
-            message_id=call.message.message_id,
-            reply_markup=kb
-        )
-    elif call.data == "send_back_to_step1":
-        post_send_step1(call.message, state)
-    elif call.data == "send_confirm":
-        send_posts_to_channel(call.message, state)
-        reset_user_state(user_id)
-        bot.edit_message_text(
-            "Post(lar) kanalga yuborildi.",
+            "Tahrirlash bekor qilindi.",
             chat_id=call.message.chat.id,
             message_id=call.message.message_id
         )
-    else:
+    elif call.data == "send_edit":
         bot.answer_callback_query(call.id)
+        apply_edit(call.message, state)
 
-def send_posts_to_channel(message, state):
-    channel_id = state.get("channel_id")
-    posts = state.get("posts", [])
-    if not channel_id or not posts:
-        return
-    for p in posts:
-        markup = build_markup_for_post(p)
-        disable_notification = p.get("silent", False)
-        if p["type"] == "text":
-            bot.send_message(channel_id, p["data"], reply_markup=markup, disable_notification=disable_notification)
-        elif p["type"] == "photo":
-            bot.send_photo(channel_id, p["data"], caption=p["caption"], reply_markup=markup, disable_notification=disable_notification)
-        elif p["type"] == "video":
-            bot.send_video(channel_id, p["data"], caption=p["caption"], reply_markup=markup, disable_notification=disable_notification)
-        elif p["type"] == "document":
-            bot.send_document(channel_id, p["data"], caption=p["caption"], reply_markup=markup, disable_notification=disable_notification)
-        elif p["type"] == "animation":
-            bot.send_animation(channel_id, p["data"], caption=p["caption"], reply_markup=markup, disable_notification=disable_notification)
 
-# =======================
-#  TAHRIRLASH / TUGMA QO‘SHISH MENYUSI
-# =======================
-
-def show_edit_menu(message):
+def show_buttons_menu(message):
     kb = types.InlineKeyboardMarkup()
     kb.row(
-        types.InlineKeyboardButton("Reaksiya", callback_data="edit_reaction_disabled"),
-        types.InlineKeyboardButton("Tugma (URL)", callback_data="edit_url_buttons")
+        types.InlineKeyboardButton("➕ URL tugma", callback_data="btn_add_url"),
+        types.InlineKeyboardButton("➕ Inline tugma", callback_data="btn_add_inline"),
     )
     kb.row(
-        types.InlineKeyboardButton("Ovozsiz yuborish ON/OFF", callback_data="edit_silent_toggle"),
-        types.InlineKeyboardButton("Inline tugma", callback_data="edit_inline_buttons")
+        types.InlineKeyboardButton("🧹 Tugmalarni tozalash", callback_data="btn_clear_all"),
     )
-    kb.row(types.InlineKeyboardButton("Orqaga", callback_data="edit_back_to_post_menu"))
+    kb.row(
+        types.InlineKeyboardButton("⬅️ Orqaga", callback_data="btn_back")
+    )
     bot.edit_message_text(
-        "Tahrirlash / Tugma qo‘shish bo‘limi:",
+        "Tugmalar bo‘limi:",
         chat_id=message.chat.id,
         message_id=message.message_id,
         reply_markup=kb
     )
 
-@bot.callback_query_handler(func=lambda c: c.data.startswith("edit_"))
-def edit_menu_handler(call: telebot.types.CallbackQuery):
-    user_id = call.from_user.id
-    state = get_user_state(user_id)
-    posts = state.get("posts", [])
 
-    if not posts:
-        bot.answer_callback_query(call.id, "Hali post yo‘q.")
+@bot.callback_query_handler(func=lambda c: c.data.startswith("btn_"))
+def buttons_menu_callback(call: telebot.types.CallbackQuery):
+    user_id = call.from_user.id
+    state = get_state(user_id)
+
+    if not state["draft"]:
+        bot.answer_callback_query(call.id, "Avval post havolasini yuboring.")
         return
 
-    last_post = posts[-1]
-
-    if call.data == "edit_back_to_post_menu":
-        kb = post_menu_keyboard()
+    if call.data == "btn_back":
+        bot.answer_callback_query(call.id)
         bot.edit_message_text(
-            "Post menyusi:",
+            "Post boshqaruvi:",
             chat_id=call.message.chat.id,
             message_id=call.message.message_id,
-            reply_markup=kb
+            reply_markup=build_control_keyboard()
         )
-    elif call.data == "edit_reaction_disabled":
-        bot.answer_callback_query(call.id, "Reaksiya hisoblashsiz qoldirildi (o‘chirib tashlangan).")
-    elif call.data == "edit_silent_toggle":
-        last_post["silent"] = not last_post.get("silent", False)
-        status = "Ovozsiz yuboriladi" if last_post["silent"] else "Ovozli yuboriladi"
-        bot.answer_callback_query(call.id, status)
-    elif call.data == "edit_url_buttons":
-        state["step"] = "waiting_url_button_title"
+    elif call.data == "btn_clear_all":
+        state["buttons"] = []
+        state["inline_buttons"] = []
+        bot.answer_callback_query(call.id, "Barcha tugmalar o‘chirildi.")
+    elif call.data == "btn_add_url":
+        state["step"] = "waiting_url_title"
         bot.answer_callback_query(call.id)
         bot.send_message(call.message.chat.id, "URL tugma nomini yuboring:")
-    elif call.data == "edit_inline_buttons":
-        state["step"] = "waiting_inline_button_title"
+    elif call.data == "btn_add_inline":
+        state["step"] = "waiting_inline_title"
         bot.answer_callback_query(call.id)
         bot.send_message(call.message.chat.id, "Inline tugma nomini yuboring:")
-    else:
-        bot.answer_callback_query(call.id)
 
-# =======================
-#  URL TUGMA QO‘SHISH
-# =======================
 
-@bot.message_handler(func=lambda m: get_user_state(m.from_user.id).get("step") in ["waiting_url_button_title", "waiting_url_button_url"])
+@bot.message_handler(func=lambda m: get_state(m.from_user.id)["step"] in ["waiting_url_title", "waiting_url_url"])
 def handle_url_button(message: telebot.types.Message):
     user_id = message.from_user.id
-    state = get_user_state(user_id)
-    posts = state.get("posts", [])
-    if not posts:
-        bot.send_message(message.chat.id, "Hali post yo‘q.")
-        state["step"] = "post_menu"
+    state = get_state(user_id)
+    draft = state["draft"]
+    if not draft:
+        bot.send_message(message.chat.id, "Avval post havolasini yuboring.")
+        state["step"] = "waiting_link"
         return
-    last_post = posts[-1]
 
-    if state["step"] == "waiting_url_button_title":
-        state["tmp_btn_title"] = message.text
-        state["step"] = "waiting_url_button_url"
+    if state["step"] == "waiting_url_title":
+        state["tmp_url_title"] = message.text
+        state["step"] = "waiting_url_url"
         bot.send_message(message.chat.id, "Endi URL yuboring:")
-    elif state["step"] == "waiting_url_button_url":
-        title = state.get("tmp_btn_title")
-        url = message.text
+    elif state["step"] == "waiting_url_url":
+        title = state.get("tmp_url_title")
+        url = message.text.strip()
         if not url.startswith("http"):
             bot.send_message(message.chat.id, "URL noto‘g‘ri. Masalan: https://example.com")
             return
-        last_post["buttons"].append({"text": title, "url": url})
-        state["step"] = "edit_menu"
-        state.pop("tmp_btn_title", None)
-        bot.send_message(message.chat.id, "URL tugma qo‘shildi.")
-        show_edit_menu(message)
+        state["buttons"].append({"text": title, "url": url})
+        state.pop("tmp_url_title", None)
+        state["step"] = "idle"
+        bot.send_message(
+            message.chat.id,
+            "URL tugma qo‘shildi.",
+            reply_markup=build_control_keyboard()
+        )
 
-# =======================
-#  INLINE TUGMA QO‘SHISH
-# =======================
 
-inline_answers = {}  # id -> text
-
-@bot.message_handler(func=lambda m: get_user_state(m.from_user.id).get("step") in ["waiting_inline_button_title", "waiting_inline_button_text"])
+@bot.message_handler(func=lambda m: get_state(m.from_user.id)["step"] in ["waiting_inline_title", "waiting_inline_text"])
 def handle_inline_button(message: telebot.types.Message):
     user_id = message.from_user.id
-    state = get_user_state(user_id)
-    posts = state.get("posts", [])
-    if not posts:
-        bot.send_message(message.chat.id, "Hali post yo‘q.")
-        state["step"] = "post_menu"
+    state = get_state(user_id)
+    draft = state["draft"]
+    if not draft:
+        bot.send_message(message.chat.id, "Avval post havolasini yuboring.")
+        state["step"] = "waiting_link"
         return
-    last_post = posts[-1]
 
-    if state["step"] == "waiting_inline_button_title":
+    if state["step"] == "waiting_inline_title":
         state["tmp_inline_title"] = message.text
-        state["step"] = "waiting_inline_button_text"
-        bot.send_message(message.chat.id, "Endi tugma bosilganda chiqadigan matnni yuboring:")
-    elif state["step"] == "waiting_inline_button_text":
+        state["step"] = "waiting_inline_text"
+        bot.send_message(message.chat.id, "Tugma bosilganda chiqadigan matnni yuboring:")
+    elif state["step"] == "waiting_inline_text":
         title = state.get("tmp_inline_title")
         ans_text = message.text
-        btn_id = f"{message.from_user.id}_{len(inline_answers)+1}"
+        btn_id = f"{user_id}_{len(inline_answers)+1}"
         inline_answers[btn_id] = ans_text
-        last_post["inline_buttons"].append({"id": btn_id, "text": title})
-        state["step"] = "edit_menu"
+        state["inline_buttons"].append({"id": btn_id, "text": title})
         state.pop("tmp_inline_title", None)
-        bot.send_message(message.chat.id, "Inline tugma qo‘shildi.")
-        show_edit_menu(message)
+        state["step"] = "idle"
+        bot.send_message(
+            message.chat.id,
+            "Inline tugma qo‘shildi.",
+            reply_markup=build_control_keyboard()
+        )
+
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("inline_ans:"))
 def inline_answer_handler(call: telebot.types.CallbackQuery):
     btn_id = call.data.split(":", 1)[1]
     text = inline_answers.get(btn_id, "Hatolik yuz berdi.")
-    # kanalga obuna tekshirishni bu yerda qo‘shish mumkin (agar xohlasang keyin alohida qilamiz)
     bot.answer_callback_query(call.id)
     bot.send_message(call.message.chat.id, text)
 
-# =======================
-#  RUN
-# =======================
+
+def apply_edit(message, state):
+    chat_id = state["target_chat_id"]
+    msg_id = state["target_message_id"]
+    draft = state["draft"]
+    markup = build_buttons_markup(state)
+
+    try:
+        if draft["type"] == "text":
+            bot.edit_message_text(
+                draft["data"],
+                chat_id=chat_id,
+                message_id=msg_id,
+                reply_markup=markup
+            )
+        elif draft["type"] in ["photo", "video", "document", "animation"]:
+            # faqat caption va tugmalarni yangilaymiz
+            bot.edit_message_caption(
+                chat_id=chat_id,
+                message_id=msg_id,
+                caption=draft.get("caption"),
+                reply_markup=markup
+            )
+        bot.edit_message_text(
+            "Post tahrirlandi va kanalga yangilandi.",
+            chat_id=message.chat.id,
+            message_id=message.message_id
+        )
+        reset_state(message.chat.id)
+    except Exception as e:
+        bot.send_message(message.chat.id, f"Tahrirlashda xatolik: {e}")
+
 
 print("Bot ishga tushdi.")
 bot.infinity_polling(skip_pending=True)
