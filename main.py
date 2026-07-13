@@ -19,36 +19,22 @@ app = Flask(__name__)
 user_states = {}
 current_post = {}
 pending_buttons = []
-channels = []  # Global channels ro'yxati
+channels = []
 
-# Kanallarni yuklash funksiyasi
-def load_channels_from_json(data):
-    try:
-        if isinstance(data, str):
-            channels_list = json.loads(data)
-        else:
-            channels_list = data
-        
-        if isinstance(channels_list, list):
-            return channels_list
-    except:
-        pass
-    return []
 
-# Barcha kanallarni JSON formatida olish
+# Kanallarni JSON formatida olish
 def get_channels_json():
     return json.dumps(channels, ensure_ascii=False, indent=2)
+
 
 # Kanallar faylini yuborish
 def send_channels_file(chat_id):
     if channels:
         json_str = get_channels_json()
         
-        # Fayl yaratish
         with open('channels_backup.json', 'w', encoding='utf-8') as f:
             f.write(json_str)
         
-        # Faylni yuborish
         with open('channels_backup.json', 'rb') as f:
             bot.send_document(
                 chat_id,
@@ -58,10 +44,11 @@ def send_channels_file(chat_id):
                 visible_file_name="channels_backup.json"
             )
         
-        # Faylni o'chirish
-        os.remove('channels_backup.json')
+        if os.path.exists('channels_backup.json'):
+            os.remove('channels_backup.json')
     else:
         bot.send_message(chat_id, "❌ Hali hech qanday kanal qo'shilmagan!")
+
 
 # Keyboard'lar
 def get_owner_main_keyboard():
@@ -75,6 +62,7 @@ def get_owner_main_keyboard():
     markup.add(btn_create, btn_add_channel, btn_channels, btn_delete_channel, btn_download, btn_upload)
     return markup
 
+
 def get_post_buttons():
     markup = types.InlineKeyboardMarkup(row_width=2)
     btn_add_button = types.InlineKeyboardButton("🔗 Tugma qo'shish", callback_data="add_button")
@@ -83,6 +71,7 @@ def get_post_buttons():
     markup.add(btn_add_button, btn_send, btn_cancel)
     return markup
 
+
 def get_send_options():
     markup = types.InlineKeyboardMarkup(row_width=2)
     btn_select = types.InlineKeyboardButton("🎯 Tanlash", callback_data="select_channels")
@@ -90,6 +79,7 @@ def get_send_options():
     btn_back = types.InlineKeyboardButton("⬅️ Orqaga", callback_data="back_to_post")
     markup.add(btn_select, btn_all, btn_back)
     return markup
+
 
 def get_channels_keyboard(selected_channels=None, delete_mode=False):
     if selected_channels is None:
@@ -116,11 +106,13 @@ def get_channels_keyboard(selected_channels=None, delete_mode=False):
     
     return markup
 
+
 def get_back_keyboard():
     markup = types.InlineKeyboardMarkup()
     btn_back = types.InlineKeyboardButton("⬅️ Orqaga", callback_data="back_to_main")
     markup.add(btn_back)
     return markup
+
 
 def get_confirm_delete_keyboard(channel_id, channel_name):
     markup = types.InlineKeyboardMarkup(row_width=2)
@@ -129,8 +121,10 @@ def get_confirm_delete_keyboard(channel_id, channel_name):
     markup.add(btn_yes, btn_no)
     return markup
 
+
 def is_owner(user_id):
     return user_id == OWNER_ID
+
 
 # Start komandasi
 @bot.message_handler(commands=['start'])
@@ -147,6 +141,7 @@ def start_command(message):
             "Bot faqat egasi uchun ishlaydi (@Shadow_sxi)"
         )
 
+
 # Admin panel
 @bot.message_handler(commands=['admin'])
 def admin_command(message):
@@ -158,6 +153,7 @@ def admin_command(message):
         )
     else:
         bot.send_message(message.chat.id, "Bot faqat egasi uchun ishlaydi (@Shadow_sxi)")
+
 
 # Callback handler
 @bot.callback_query_handler(func=lambda call: True)
@@ -212,7 +208,6 @@ def handle_callback(call):
             )
     
     elif call.data == "download_channels":
-        # Kanallar faylini yuklash
         bot.answer_callback_query(call.id, "Fayl yuborilmoqda...")
         send_channels_file(call.message.chat.id)
         bot.edit_message_text(
@@ -223,7 +218,6 @@ def handle_callback(call):
         )
     
     elif call.data == "upload_channels":
-        # Kanallar faylini qabul qilish
         user_states[user_id] = "waiting_for_channels_file"
         bot.edit_message_text(
             "📂 Iltimos, kanallar JSON faylini yuboring:\n\n"
@@ -259,19 +253,17 @@ def handle_callback(call):
     
     elif call.data.startswith("confirm_del_"):
         channel_id = call.data.replace("confirm_del_", "")
-       channels[:] = [ch for ch in channels if ch['id'] != channel_id]
+        # Kanallarni yangilash
+        channels[:] = [ch for ch in channels if ch['id'] != channel_id]
         
-        # Yangilangan faylni yuborish
         bot.edit_message_text(
             "✅ Kanal muvaffaqiyatli o'chirildi! Yangilangan faylni yuboraman...",
             call.message.chat.id,
             call.message.message_id
         )
         
-        # Avtomatik ravishda yangilangan faylni yuborish
         send_channels_file(call.message.chat.id)
         
-        # Asosiy menyuga qaytish
         bot.send_message(
             call.message.chat.id,
             "👋 Post yaratishni istaysizmi?",
@@ -400,6 +392,7 @@ def handle_callback(call):
             reply_markup=get_channels_keyboard(selected)
         )
 
+
 # Fayl qabul qilish handleri
 @bot.message_handler(content_types=['document'],
                      func=lambda message: is_owner(message.from_user.id) and 
@@ -408,22 +401,15 @@ def receive_channels_file(message):
     user_id = message.from_user.id
     
     try:
-        # Fayl ma'lumotini olish
         file_info = bot.get_file(message.document.file_id)
         downloaded_file = bot.download_file(file_info.file_path)
         
-        # JSON ni o'qish
         channels_data = json.loads(downloaded_file.decode('utf-8'))
         
-        global channels
-        
-        # Agar kanallar ro'yxati bo'lsa
         if isinstance(channels_data, list):
-            # Mavjud kanallarni yangilash
             new_channels = []
             for ch in channels_data:
                 if isinstance(ch, dict) and 'id' in ch and 'name' in ch:
-                    # Dubllarni tekshirish
                     if not any(existing['id'] == ch['id'] for existing in channels):
                         new_channels.append(ch)
             
@@ -454,6 +440,7 @@ def receive_channels_file(message):
             reply_markup=get_owner_main_keyboard()
         )
 
+
 # Kanal qo'shish
 @bot.message_handler(func=lambda message: is_owner(message.from_user.id) and 
                      user_states.get(message.from_user.id) == "waiting_for_channel")
@@ -474,7 +461,6 @@ def add_channel(message):
                 if not any(ch['id'] == channel_info['id'] for ch in channels):
                     channels.append(channel_info)
                     
-                    # Kanal qo'shilganini tasdiqlash
                     bot.send_message(
                         message.chat.id,
                         f"✅ Kanal qo'shildi: {channel_info['name']}\n\n"
@@ -483,11 +469,9 @@ def add_channel(message):
                         parse_mode='HTML'
                     )
                     
-                    # Avtomatik ravishda yangilangan faylni yuborish
                     bot.send_message(message.chat.id, "📁 Yangilangan kanallar fayli yuborilmoqda...")
                     send_channels_file(message.chat.id)
                     
-                    # Asosiy menyu
                     bot.send_message(
                         message.chat.id,
                         "👋 Post yaratishni istaysizmi?",
@@ -522,6 +506,7 @@ def add_channel(message):
             reply_markup=get_owner_main_keyboard()
         )
 
+
 # Post qabul qilish
 @bot.message_handler(func=lambda message: is_owner(message.from_user.id) and 
                      user_states.get(message.from_user.id) == "waiting_for_post",
@@ -546,6 +531,7 @@ def receive_post(message):
         reply_markup=get_post_buttons()
     )
 
+
 def process_button_name(message):
     user_id = message.from_user.id
     if message.text:
@@ -555,6 +541,7 @@ def process_button_name(message):
         bot.register_next_step_handler(msg, process_button_url)
     else:
         bot.send_message(message.chat.id, "❌ Iltimos, tugma nomini matn ko'rinishida kiriting!")
+
 
 def process_button_url(message):
     user_id = message.from_user.id
@@ -576,6 +563,7 @@ def process_button_url(message):
         )
     else:
         bot.send_message(message.chat.id, "❌ Iltimos, URL manzilini matn ko'rinishida kiriting!")
+
 
 def send_to_all_channels(message):
     user_id = message.chat.id
@@ -604,6 +592,7 @@ def send_to_all_channels(message):
     
     bot.send_message(user_id, f"✅ {sent_count}/{len(channels)} kanalga yuborildi!")
 
+
 def send_to_selected_channels(message, selected_channel_ids):
     user_id = message.chat.id
     
@@ -629,15 +618,14 @@ def send_to_selected_channels(message, selected_channel_ids):
     
     bot.send_message(user_id, f"✅ {sent_count}/{len(selected_channel_ids)} kanalga yuborildi!")
 
+
 def send_post_to_channel(post_data, channel_id, buttons=None):
-    # Forward qilish
     bot.forward_message(
         chat_id=channel_id,
         from_chat_id=post_data['from_chat_id'],
         message_id=post_data['message_id']
     )
     
-    # Agar tugmalar bo'lsa, qo'shimcha xabar yuborish
     if buttons:
         markup = types.InlineKeyboardMarkup()
         for btn in buttons:
@@ -648,6 +636,7 @@ def send_post_to_channel(post_data, channel_id, buttons=None):
             text="🔗 Havolalar:",
             reply_markup=markup
         )
+
 
 # Webhook
 @app.route('/' + TOKEN, methods=['POST'])
@@ -660,9 +649,11 @@ def webhook():
     else:
         return 'error', 403
 
+
 @app.route('/')
 def index():
     return 'Bot ishlamoqda!', 200
+
 
 @app.route('/setwebhook')
 def set_webhook():
@@ -671,6 +662,7 @@ def set_webhook():
     time.sleep(1)
     bot.set_webhook(url=webhook_url)
     return f'Webhook o\'rnatildi: {webhook_url}', 200
+
 
 if __name__ == '__main__':
     if WEBHOOK_URL:
