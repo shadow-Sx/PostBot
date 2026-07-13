@@ -5,6 +5,7 @@ from telebot import types
 from flask import Flask, request
 from dotenv import load_dotenv
 import time
+import re
 
 load_dotenv()
 
@@ -19,7 +20,7 @@ app = Flask(__name__)
 user_states = {}
 user_posts = {}
 channels = []
-selected_channels_temp = {}  # {user_id: [channel_ids]}
+selected_channels_temp = {}
 
 
 # Kanallarni JSON formatida olish
@@ -88,7 +89,6 @@ def get_channels_keyboard(user_id, delete_mode=False):
             btn_text = f"🗑 {channel['name']}"
             btn = types.InlineKeyboardButton(btn_text, callback_data=f"delete_ch_{channel['id']}")
         else:
-            # Tanlangan kanallar uchun ✅, tanlanmaganlar uchun ⭕
             is_selected = channel['id'] in selected_channels_temp[user_id]
             icon = "✅" if is_selected else "⭕"
             btn_text = f"{icon} {channel['name']}"
@@ -99,7 +99,6 @@ def get_channels_keyboard(user_id, delete_mode=False):
         btn_back = types.InlineKeyboardButton("⬅️ Orqaga", callback_data="back_to_main")
         markup.add(btn_back)
     else:
-        # Tanlanganlar sonini ko'rsatish
         selected_count = len(selected_channels_temp[user_id])
         btn_done = types.InlineKeyboardButton(f"✅ Tayyor ({selected_count} ta kanal) - Yuborish", callback_data="confirm_selected")
         btn_back = types.InlineKeyboardButton("⬅️ Orqaga", callback_data="cancel_send")
@@ -120,6 +119,45 @@ def is_owner(user_id):
     return user_id == OWNER_ID
 
 
+# Tugmalarni parse qilish
+def parse_buttons(text):
+    """Format: Кнопка 1 - http://example1.com | Кнопка 2 - http://example2.com"""
+    buttons = []
+    lines = text.strip().split('\n')
+    
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        
+        # | bilan ajratilgan tugmalar (bir qator)
+        parts = line.split('|')
+        row_buttons = []
+        
+        for part in parts:
+            part = part.strip()
+            if not part:
+                continue
+            
+            # Формат: Кнопка - URL - style:color
+            match = re.match(r'^(.+?)\s*-\s*(https?://\S+)(?:\s*-\s*style:(\w+))?$', part)
+            if match:
+                name = match.group(1).strip()
+                url = match.group(2).strip()
+                style = match.group(3) or 'default'
+                
+                row_buttons.append({
+                    'name': name,
+                    'url': url,
+                    'style': style
+                })
+        
+        if row_buttons:
+            buttons.append(row_buttons)
+    
+    return buttons
+
+
 # Start komandasi
 @bot.message_handler(commands=['start'])
 def start_command(message):
@@ -136,19 +174,6 @@ def start_command(message):
         )
 
 
-# Admin panel
-@bot.message_handler(commands=['admin'])
-def admin_command(message):
-    if is_owner(message.from_user.id):
-        bot.send_message(
-            message.chat.id,
-            "👨‍💻 Admin panel",
-            reply_markup=get_owner_main_keyboard()
-        )
-    else:
-        bot.send_message(message.chat.id, "Bot faqat egasi uchun ishlaydi (@Shadow_sxi)")
-
-
 # /done komandasi
 @bot.message_handler(commands=['done'])
 def done_command(message):
@@ -159,14 +184,69 @@ def done_command(message):
                 del user_states[user_id]
                 bot.send_message(
                     message.chat.id,
-                    f"📝 {len(user_posts[user_id])} ta post tayyor!",
+                    f"📝 {len(user_posts[user_id])} ta post tayyor! Endi tugmalarni qo'shing:",
                     reply_markup=get_owner_main_keyboard()
                 )
-                show_post_preview(message)
+                show_button_input(message)
             else:
                 bot.send_message(message.chat.id, "❌ Hech qanday post yubormadingiz!")
         else:
             bot.send_message(message.chat.id, "❌ Siz post yaratish rejimida emassiz!")
+
+
+def show_button_input(message):
+    """Tugmalarni kiritish uchun yo'riqnoma"""
+    user_id = message.from_user.id
+    
+    text = (
+        "🔗 <b>Tugmalarni quyidagi formatda yuboring:</b>\n\n"
+        "<code>Tugma nomi - https://url.com</code>\n\n"
+        "<b>Bir qatorga bir nechta tugma:</b>\n"
+        "<code>Tugma 1 - https://url1.com | Tugma 2 - https://url2.com</code>\n\n"
+        "<b>Rang qo'shish (ixtiyoriy):</b>\n"
+        "<code>Tugma - https://url.com - style:green</code>\n\n"
+        "<b>Misol:</b>\n"
+        "<code>Kanal - https://t.me/channel | Chat - https://t.me/group\n"
+        "Sayt - https://example.com - style:blue</code>\n\n"
+        "<i>Agar tugma kerak bo'lmasa, /skip deb yozing</i>"
+    )
+    
+    user_states[user_id] = "waiting_for_buttons"
+    
+    bot.send_message(
+        message.chat.id,
+        text,
+        parse_mode='HTML',
+        reply_markup=types.ReplyKeyboardMarkup(resize_keyboard=True).add(
+            types.KeyboardButton("⏭ Tugmalarsiz"),
+            types.KeyboardButton("❌ Bekor qilish")
+        )
+    )
+
+
+# /skip komandasi
+@bot.message_handler(commands=['skip'])
+def skip_buttons(message):
+    if is_owner(message.from_user.id):
+        user_id = message.from_user.id
+        if user_id in user_posts and user_posts[user_id]:
+            bot.send_message(
+                message.chat.id,
+                "✅ Tugmalarsiz davom etamiz. Yuborish usulini tanlang:",
+                reply_markup=get_owner_main_keyboard()
+            )
+            show_send_options(message)
+        else:
+            bot.send_message(message.chat.id, "❌ Avval post yarating!")
+
+
+def show_send_options(message):
+    """Yuborish opsiyalarini ko'rsatish"""
+    bot.send_message(
+        message.chat.id,
+        "📤 Yuborish usulini tanlang:",
+        reply_markup=get_send_options()
+    )
 
 
 # Oddiy tugmalar handleri
@@ -183,7 +263,7 @@ def handle_buttons(message):
             message.chat.id,
             "📝 Post yuboring (matn, rasm, video, gif, sticker, fayl, ovozli xabar)\n\n"
             "<b>HTML kodlaridan foydalanishingiz mumkin!</b>\n"
-            "Masalan: <code>&lt;b&gt;Qalin&lt;/b&gt;</code>, <code>&lt;i&gt;Kursiv&lt;/i&gt;</code>\n\n"
+            "<b>Rasmga caption sifatida HTML yozishingiz mumkin!</b>\n\n"
             "Bir nechta post yuborishingiz mumkin.\n"
             "Tayyor bo'lgach, <b>/done</b> deb yozing yoki \"✅ Tayyor\" tugmasini bosing",
             parse_mode='HTML',
@@ -245,18 +325,32 @@ def handle_buttons(message):
                 del user_states[user_id]
                 bot.send_message(
                     message.chat.id,
-                    f"📝 {len(user_posts[user_id])} ta post tayyor!",
+                    f"📝 {len(user_posts[user_id])} ta post tayyor! Endi tugmalarni qo'shing:",
                     reply_markup=get_owner_main_keyboard()
                 )
-                show_post_preview(message)
+                show_button_input(message)
             else:
                 bot.send_message(message.chat.id, "❌ Hech qanday post yubormadingiz!")
+    
+    elif text == "⏭ Tugmalarsiz":
+        if user_id in user_states and user_states[user_id] == "waiting_for_buttons":
+            del user_states[user_id]
+            for post in user_posts.get(user_id, []):
+                post['buttons'] = []
+            bot.send_message(
+                message.chat.id,
+                "✅ Tugmalarsiz davom etamiz.",
+                reply_markup=get_owner_main_keyboard()
+            )
+            show_send_options(message)
     
     elif text == "❌ Bekor qilish" or text == "⬅️ Bekor qilish":
         if user_id in user_states:
             del user_states[user_id]
         if user_id in user_posts:
             del user_posts[user_id]
+        if user_id in selected_channels_temp:
+            selected_channels_temp[user_id] = []
         bot.send_message(
             message.chat.id,
             "❌ Bekor qilindi.",
@@ -264,54 +358,54 @@ def handle_buttons(message):
         )
 
 
-def show_post_preview(message):
+# Tugmalarni qabul qilish
+@bot.message_handler(func=lambda message: is_owner(message.from_user.id) and 
+                     user_states.get(message.from_user.id) == "waiting_for_buttons")
+def receive_buttons(message):
     user_id = message.from_user.id
-    posts = user_posts.get(user_id, [])
+    text = message.text
     
-    for i, post in enumerate(posts, 1):
-        try:
-            # Postni ko'chirib yuborish (HTML bilan)
-            bot.copy_message(
-                chat_id=message.chat.id,
-                from_chat_id=post['chat_id'],
-                message_id=post['message_id']
-            )
+    if text in ["⏭ Tugmalarsiz", "❌ Bekor qilish"]:
+        return handle_buttons(message)
+    
+    try:
+        buttons = parse_buttons(text)
+        
+        if buttons:
+            # Barcha postlarga bir xil tugmalar
+            for post in user_posts.get(user_id, []):
+                post['buttons'] = buttons
             
-            # Agar matnli post bo'lsa va HTML teglari bo'lsa
-            if post.get('text'):
-                bot.send_message(
-                    message.chat.id,
-                    f"Post #{i} (HTML ko'rinishi):",
-                    reply_markup=None
-                )
+            del user_states[user_id]
             
-            # Tugmalar so'rash
-            markup = types.InlineKeyboardMarkup()
-            btn_add = types.InlineKeyboardButton(f"🔗 Post #{i} ga tugma qo'shish", callback_data=f"add_btn_{i}")
-            btn_skip = types.InlineKeyboardButton(f"⏭ Post #{i} ni o'tkazish", callback_data=f"skip_btn_{i}")
-            markup.add(btn_add, btn_skip)
-            
-            buttons_count = len(post.get('buttons', []))
-            btn_text = f"Post #{i}"
-            if buttons_count > 0:
-                btn_text += f" ({buttons_count} ta tugma)"
-            btn_text += " uchun tugma qo'shish kerakmi?"
+            # Tugmalarni ko'rsatish
+            response = "✅ Tugmalar qo'shildi!\n\n<b>Ko'rinishi:</b>\n"
+            for row in buttons:
+                row_text = " | ".join([f"{btn['name']} → {btn['url']}" for btn in row])
+                response += f"{row_text}\n"
             
             bot.send_message(
                 message.chat.id,
-                btn_text,
-                reply_markup=markup
+                response,
+                parse_mode='HTML',
+                reply_markup=get_owner_main_keyboard()
             )
-        except Exception as e:
-            bot.send_message(message.chat.id, f"Post #{i} ko'rsatishda xatolik: {str(e)}")
-    
-    # Yuborish tugmasi
-    markup = types.InlineKeyboardMarkup()
-    btn_send = types.InlineKeyboardButton("📤 Barcha postlarni yuborish", callback_data="send_all_posts")
-    btn_cancel = types.InlineKeyboardButton("❌ Bekor qilish", callback_data="cancel_post")
-    markup.add(btn_send, btn_cancel)
-    
-    bot.send_message(message.chat.id, "Postlar tayyor! Yuborishni xohlaysizmi?", reply_markup=markup)
+            
+            show_send_options(message)
+        else:
+            bot.send_message(
+                message.chat.id,
+                "❌ Noto'g'ri format! Qaytadan urinib ko'ring:\n\n"
+                "<code>Tugma nomi - https://url.com</code>\n\n"
+                "Yoki /skip deb yozing",
+                parse_mode='HTML'
+            )
+    except Exception as e:
+        bot.send_message(
+            message.chat.id,
+            f"❌ Xatolik: {str(e)}\n\nTo'g'ri formatda yuboring yoki /skip deb yozing",
+            parse_mode='HTML'
+        )
 
 
 # Callback handler
@@ -324,41 +418,7 @@ def handle_callback(call):
     user_id = call.from_user.id
     data = call.data
     
-    # Post uchun tugma qo'shish
-    if data.startswith("add_btn_"):
-        post_index = int(data.replace("add_btn_", "")) - 1
-        if post_index < len(user_posts.get(user_id, [])):
-            user_states[user_id] = f"waiting_for_button_name_{post_index}"
-            msg = bot.edit_message_text(
-                f"🔗 Post #{post_index + 1} uchun tugma nomini kiriting:",
-                call.message.chat.id,
-                call.message.message_id
-            )
-            bot.register_next_step_handler(msg, process_button_name, post_index)
-    
-    elif data.startswith("skip_btn_"):
-        post_index = int(data.replace("skip_btn_", "")) - 1
-        if post_index < len(user_posts.get(user_id, [])):
-            if 'buttons' not in user_posts[user_id][post_index]:
-                user_posts[user_id][post_index]['buttons'] = []
-            bot.edit_message_text(
-                f"✅ Post #{post_index + 1} tugmalarsiz tayyor.",
-                call.message.chat.id,
-                call.message.message_id
-            )
-    
-    elif data == "send_all_posts":
-        if user_id in user_posts and user_posts[user_id]:
-            bot.edit_message_text(
-                "📤 Yuborish usulini tanlang:",
-                call.message.chat.id,
-                call.message.message_id,
-                reply_markup=get_send_options()
-            )
-        else:
-            bot.answer_callback_query(call.id, "❌ Post topilmadi!")
-    
-    elif data == "send_all":
+    if data == "send_all":
         send_all_posts_to_all_channels(call.message)
     
     elif data == "select_channels":
@@ -376,7 +436,6 @@ def handle_callback(call):
     elif data == "confirm_selected":
         if user_id in selected_channels_temp and selected_channels_temp[user_id]:
             send_posts_to_selected_channels(call.message, selected_channels_temp[user_id])
-            # Tozalash
             selected_channels_temp[user_id] = []
         else:
             bot.answer_callback_query(call.id, "❌ Kamida bitta kanal tanlang!")
@@ -390,11 +449,7 @@ def handle_callback(call):
             selected_channels_temp[user_id] = []
         
         try:
-            bot.edit_message_text(
-                "❌ Bekor qilindi.",
-                call.message.chat.id,
-                call.message.message_id
-            )
+            bot.edit_message_text("❌ Bekor qilindi.", call.message.chat.id, call.message.message_id)
         except:
             pass
         
@@ -406,19 +461,10 @@ def handle_callback(call):
     
     elif data == "back_to_main":
         try:
-            bot.edit_message_text(
-                "👋 Kerakli amalni tanlang:",
-                call.message.chat.id,
-                call.message.message_id
-            )
+            bot.edit_message_text("👋 Kerakli amalni tanlang:", call.message.chat.id, call.message.message_id)
         except:
             pass
-        
-        bot.send_message(
-            call.message.chat.id,
-            "Menu:",
-            reply_markup=get_owner_main_keyboard()
-        )
+        bot.send_message(call.message.chat.id, "Menu:", reply_markup=get_owner_main_keyboard())
     
     elif data.startswith("delete_ch_"):
         channel_id = data.replace("delete_ch_", "")
@@ -457,7 +503,6 @@ def handle_callback(call):
         else:
             selected_channels_temp[user_id].append(channel_id)
         
-        # Keyboardni yangilash
         bot.edit_message_text(
             "🎯 Qaysi kanallarga yuboramiz?\n\n"
             f"Tanlangan: {len(selected_channels_temp[user_id])} ta kanal",
@@ -466,17 +511,10 @@ def handle_callback(call):
             reply_markup=get_channels_keyboard(user_id)
         )
     
-    elif data == "buttons_done":
-        bot.edit_message_text(
-            "✅ Tugmalar tayyor!",
-            call.message.chat.id,
-            call.message.message_id
-        )
-    
     bot.answer_callback_query(call.id)
 
 
-# Post qabul qilish (bir nechta post, HTML bilan)
+# Post qabul qilish (rasm caption bilan HTML)
 @bot.message_handler(func=lambda message: is_owner(message.from_user.id) and 
                      user_states.get(message.from_user.id) == "waiting_for_post",
                      content_types=['text', 'photo', 'video', 'animation', 'sticker', 
@@ -484,13 +522,17 @@ def handle_callback(call):
 def receive_post(message):
     user_id = message.from_user.id
     
+    # Caption ni saqlash (rasm/video uchun)
+    caption = message.caption if hasattr(message, 'caption') and message.caption else None
+    
     post_data = {
         'chat_id': message.chat.id,
         'message_id': message.message_id,
         'content_type': message.content_type,
         'from_chat_id': message.chat.id,
         'buttons': [],
-        'text': message.text if message.content_type == 'text' else None
+        'text': message.text if message.content_type == 'text' else None,
+        'caption': caption  # Rasm caption
     }
     
     if user_id not in user_posts:
@@ -498,25 +540,38 @@ def receive_post(message):
     
     user_posts[user_id].append(post_data)
     
-    # Postni ko'chirib yuborish (HTML formatida)
+    # Postni ko'rsatish (HTML bilan)
     try:
         if message.content_type == 'text':
-            # Matnli postni HTML bilan yuborish
             bot.send_message(
                 chat_id=message.chat.id,
                 text=message.text,
                 parse_mode='HTML',
                 disable_web_page_preview=True
             )
+        elif message.content_type == 'photo' and caption:
+            # Rasmni caption bilan qayta yuborish
+            bot.send_photo(
+                chat_id=message.chat.id,
+                photo=message.photo[-1].file_id,
+                caption=caption,
+                parse_mode='HTML'
+            )
+        elif message.content_type == 'video' and caption:
+            bot.send_video(
+                chat_id=message.chat.id,
+                video=message.video.file_id,
+                caption=caption,
+                parse_mode='HTML'
+            )
         else:
-            # Boshqa turdagi postlarni copy qilish
             bot.copy_message(
                 chat_id=message.chat.id,
                 from_chat_id=message.chat.id,
                 message_id=message.message_id
             )
     except Exception as e:
-        # Agar HTML xatolik bo'lsa, oddiy copy qilish
+        # Agar HTML xatolik bo'lsa, oddiy copy
         bot.copy_message(
             chat_id=message.chat.id,
             from_chat_id=message.chat.id,
@@ -526,43 +581,9 @@ def receive_post(message):
     bot.send_message(
         message.chat.id,
         f"✅ Post qabul qilindi! ({len(user_posts[user_id])} ta post)\n"
-        "Yana post yuboring yoki <b>/done</b> yoki \"✅ Tayyor\" tugmasini bosing.",
+        "Yana post yuboring yoki <b>/done</b> / \"✅ Tayyor\" tugmasini bosing.",
         parse_mode='HTML'
     )
-
-
-def process_button_name(message, post_index):
-    user_id = message.from_user.id
-    if message.text:
-        user_states[user_id] = f"waiting_for_button_url_{post_index}"
-        temp_button = {'name': message.text, 'url': ''}
-        msg = bot.send_message(message.chat.id, "🔗 Tugma URL manzilini kiriting:")
-        bot.register_next_step_handler(msg, process_button_url, post_index, temp_button)
-
-
-def process_button_url(message, post_index, temp_button):
-    user_id = message.from_user.id
-    if message.text:
-        temp_button['url'] = message.text
-        
-        if 'buttons' not in user_posts[user_id][post_index]:
-            user_posts[user_id][post_index]['buttons'] = []
-        
-        user_posts[user_id][post_index]['buttons'].append(temp_button)
-        
-        # Tugmalar ro'yxatini ko'rsatish
-        buttons_text = f"📋 Post #{post_index + 1} uchun qo'shilgan tugmalar:\n\n"
-        for i, btn in enumerate(user_posts[user_id][post_index]['buttons'], 1):
-            buttons_text += f"{i}. <b>{btn['name']}</b>\n   {btn['url']}\n"
-        
-        buttons_text += f"\nJami: {len(user_posts[user_id][post_index]['buttons'])} ta tugma"
-        
-        markup = types.InlineKeyboardMarkup(row_width=2)
-        btn_add = types.InlineKeyboardButton("➕ Yana tugma qo'shish", callback_data=f"add_btn_{post_index + 1}")
-        btn_done = types.InlineKeyboardButton("✅ Tugmalar tayyor", callback_data=f"skip_btn_{post_index + 1}")
-        markup.add(btn_add, btn_done)
-        
-        bot.send_message(message.chat.id, buttons_text, parse_mode='HTML', reply_markup=markup)
 
 
 def send_all_posts_to_all_channels(message):
@@ -591,11 +612,24 @@ def send_all_posts_to_all_channels(message):
                 f"❌ {channel['name']} kanaliga yuborishda xatolik: {str(e)}"
             )
     
+    try:
+        bot.edit_message_text(
+            f"✅ {len(posts)} ta post {len(channels)} ta kanalga yuborildi!\nJami: {total_sent} ta",
+            message.chat.id,
+            message.message_id
+        )
+    except:
+        pass
+    
     bot.send_message(
         user_id,
-        f"✅ {len(posts)} ta post {len(channels)} ta kanalga yuborildi!\nJami: {total_sent} ta",
+        "Kerakli amalni tanlang:",
         reply_markup=get_owner_main_keyboard()
     )
+    
+    # Tozalash
+    if user_id in user_posts:
+        del user_posts[user_id]
 
 
 def send_posts_to_selected_channels(message, selected_channel_ids):
@@ -622,77 +656,90 @@ def send_posts_to_selected_channels(message, selected_channel_ids):
                     f"❌ {channel['name']} kanaliga yuborishda xatolik: {str(e)}"
                 )
     
-    bot.edit_message_text(
-        f"✅ {len(posts)} ta post {len(selected_channel_ids)} ta kanalga yuborildi!\nJami: {total_sent} ta",
-        message.chat.id,
-        message.message_id
-    )
+    try:
+        bot.edit_message_text(
+            f"✅ {len(posts)} ta post {len(selected_channel_ids)} ta kanalga yuborildi!\nJami: {total_sent} ta",
+            message.chat.id,
+            message.message_id
+        )
+    except:
+        pass
+    
     bot.send_message(
         user_id,
         "Kerakli amalni tanlang:",
         reply_markup=get_owner_main_keyboard()
     )
+    
+    # Tozalash
+    if user_id in user_posts:
+        del user_posts[user_id]
 
 
 def send_single_post_to_channel(post, channel_id):
-    # Post turiga qarab yuborish
     try:
-        if post['content_type'] == 'text' and post.get('text'):
-            # Matnli postni HTML formatida yuborish
+        buttons = post.get('buttons', [])
+        markup = None
+        
+        if buttons:
+            markup = types.InlineKeyboardMarkup(row_width=8)
+            for row in buttons:
+                row_btns = []
+                for btn in row:
+                    row_btns.append(types.InlineKeyboardButton(btn['name'], url=btn['url']))
+                markup.add(*row_btns)
+        
+        # Post turiga qarab yuborish
+        if post['content_type'] == 'text':
             bot.send_message(
                 chat_id=channel_id,
-                text=post['text'],
+                text=post.get('text', ''),
                 parse_mode='HTML',
-                disable_web_page_preview=True
+                disable_web_page_preview=True,
+                reply_markup=markup
+            )
+        elif post['content_type'] == 'photo':
+            caption = post.get('caption', '')
+            bot.send_photo(
+                chat_id=channel_id,
+                photo=post['message_id'],
+                caption=caption if caption else None,
+                parse_mode='HTML' if caption else None,
+                reply_markup=markup
+            )
+        elif post['content_type'] == 'video':
+            caption = post.get('caption', '')
+            bot.send_video(
+                chat_id=channel_id,
+                video=post['message_id'],
+                caption=caption if caption else None,
+                parse_mode='HTML' if caption else None,
+                reply_markup=markup
             )
         else:
             # Boshqa turdagi postlarni copy qilish
             bot.copy_message(
                 chat_id=channel_id,
                 from_chat_id=post['from_chat_id'],
-                message_id=post['message_id']
-            )
-        
-        # Agar tugmalar bo'lsa, qo'shimcha xabar
-        if post.get('buttons'):
-            markup = types.InlineKeyboardMarkup(row_width=2)
-            buttons = post['buttons']
-            
-            # Tugmalarni yonma-yon qilish (juft-juft)
-            for i in range(0, len(buttons), 2):
-                row = []
-                row.append(types.InlineKeyboardButton(buttons[i]['name'], url=buttons[i]['url']))
-                if i + 1 < len(buttons):
-                    row.append(types.InlineKeyboardButton(buttons[i+1]['name'], url=buttons[i+1]['url']))
-                markup.add(*row)
-            
-            bot.send_message(
-                chat_id=channel_id,
-                text="🔗 Havolalar:",
+                message_id=post['message_id'],
                 reply_markup=markup
             )
+            
+            # Agar tugmalar bo'lsa va copy message ishlamasa, alohida yuborish
+            if markup:
+                bot.send_message(
+                    chat_id=channel_id,
+                    text="🔗",
+                    reply_markup=markup
+                )
     except Exception as e:
-        # Agar HTML xatolik bo'lsa, oddiy copy qilish
+        print(f"Post yuborishda xatolik: {e}")
+        # Xatolik bo'lsa, oddiy copy
         bot.copy_message(
             chat_id=channel_id,
             from_chat_id=post['from_chat_id'],
             message_id=post['message_id']
         )
-        
-        if post.get('buttons'):
-            markup = types.InlineKeyboardMarkup(row_width=2)
-            for i in range(0, len(post['buttons']), 2):
-                row = []
-                row.append(types.InlineKeyboardButton(post['buttons'][i]['name'], url=post['buttons'][i]['url']))
-                if i + 1 < len(post['buttons']):
-                    row.append(types.InlineKeyboardButton(post['buttons'][i+1]['name'], url=post['buttons'][i+1]['url']))
-                markup.add(*row)
-            
-            bot.send_message(
-                chat_id=channel_id,
-                text="🔗 Havolalar:",
-                reply_markup=markup
-            )
 
 
 # Fayl qabul qilish handleri
