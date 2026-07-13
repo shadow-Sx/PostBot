@@ -259,8 +259,7 @@ def handle_callback(call):
     
     elif call.data.startswith("confirm_del_"):
         channel_id = call.data.replace("confirm_del_", "")
-        global channels
-        channels = [ch for ch in channels if ch['id'] != channel_id]
+       channels[:] = [ch for ch in channels if ch['id'] != channel_id]
         
         # Yangilangan faylni yuborish
         bot.edit_message_text(
