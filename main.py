@@ -5,6 +5,7 @@ from flask import Flask, request
 import json
 from dotenv import load_dotenv
 import time
+import tempfile
 
 load_dotenv()
 
@@ -17,19 +18,8 @@ app = Flask(__name__)
 
 # Vaqtinchalik xotira
 user_states = {}
-channels = []
 current_posts = {}
-
-# Kanallarni yuklash
-def load_channels():
-    global channels
-    channels_json = os.getenv('CHANNELS', '[]')
-    try:
-        channels = json.loads(channels_json)
-    except:
-        channels = []
-
-load_channels()
+channels = []  # Asosiy kanallar ro'yxati
 
 # Oddiy klaviatura tugmalari
 def get_owner_main_keyboard():
@@ -37,7 +27,12 @@ def get_owner_main_keyboard():
     btn_create = types.KeyboardButton("📝 Post yaratish")
     btn_add_channel = types.KeyboardButton("➕ Kanal qo'shish")
     btn_channels = types.KeyboardButton("📋 Kanallar ro'yxati")
-    markup.add(btn_create, btn_add_channel, btn_channels)
+    btn_delete_channel = types.KeyboardButton("🗑 Kanal o'chirish")
+    btn_export = types.KeyboardButton("📤 Kanallarni export")
+    btn_import = types.KeyboardButton("📥 Kanallarni import")
+    markup.add(btn_create, btn_add_channel)
+    markup.add(btn_channels, btn_delete_channel)
+    markup.add(btn_export, btn_import)
     return markup
 
 def get_post_management_keyboard():
@@ -61,9 +56,6 @@ def get_back_keyboard():
     markup.add(btn_back)
     return markup
 
-def remove_keyboard():
-    return types.ReplyKeyboardRemove()
-
 # Owner tekshirish
 def is_owner(user_id):
     return user_id == OWNER_ID
@@ -71,7 +63,6 @@ def is_owner(user_id):
 @bot.message_handler(commands=['start'])
 def start_command(message):
     if is_owner(message.from_user.id):
-        # Avvalgi holatlarni tozalash
         if message.from_user.id in user_states:
             del user_states[message.from_user.id]
         
@@ -86,7 +77,6 @@ def start_command(message):
             "Bot faqat egasi uchun ishlaydi (@Shadow_sxi)"
         )
 
-# Admin panel
 @bot.message_handler(commands=['admin'])
 def admin_command(message):
     if is_owner(message.from_user.id):
@@ -98,9 +88,61 @@ def admin_command(message):
     else:
         bot.send_message(message.chat.id, "Bot faqat egasi uchun ishlaydi (@Shadow_sxi)")
 
+# Fayl qabul qilish - Kanallarni import qilish
+@bot.message_handler(content_types=['document'],
+                     func=lambda message: is_owner(message.from_user.id) and 
+                     user_states.get(message.from_user.id) == "waiting_for_import")
+def import_channels_file(message):
+    global channels
+    user_id = message.from_user.id
+    
+    try:
+        # Fayl ma'lumotlarini olish
+        file_info = bot.get_file(message.document.file_id)
+        downloaded_file = bot.download_file(file_info.file_path)
+        
+        # JSON ni o'qish
+        imported_channels = json.loads(downloaded_file.decode('utf-8'))
+        
+        if not isinstance(imported_channels, list):
+            raise ValueError("Noto'g'ri format")
+        
+        # Kanallarni qo'shish
+        added_count = 0
+        skipped_count = 0
+        
+        for channel in imported_channels:
+            if 'id' in channel and 'name' in channel:
+                # Takroriy kanallarni tekshirish
+                if not any(ch['id'] == channel['id'] for ch in channels):
+                    channels.append(channel)
+                    added_count += 1
+                else:
+                    skipped_count += 1
+        
+        del user_states[user_id]
+        
+        bot.send_message(
+            message.chat.id,
+            f"✅ Kanallar import qilindi!\n\n"
+            f"📥 Qo'shilgan: {added_count}\n"
+            f"⏭ O'tkazib yuborilgan: {skipped_count}\n"
+            f"📊 Jami kanallar: {len(channels)}",
+            reply_markup=get_owner_main_keyboard()
+        )
+        
+    except Exception as e:
+        bot.send_message(
+            message.chat.id,
+            f"❌ Xatolik: Noto'g'ri format yoki fayl buzilgan.\n"
+            f"Avval kanallarni export qiling va o'sha faylni yuklang.",
+            reply_markup=get_owner_main_keyboard()
+        )
+
 # Matnli xabarlarni qayta ishlash
 @bot.message_handler(func=lambda message: is_owner(message.from_user.id))
 def handle_messages(message):
+    global channels
     user_id = message.from_user.id
     
     # Bosh menyu
@@ -148,6 +190,7 @@ def handle_messages(message):
             text = "📋 Mening kanallarim:\n\n"
             for i, ch in enumerate(channels, 1):
                 text += f"{i}. {ch['name']} (ID: {ch['id']})\n"
+            text += f"\n📊 Jami: {len(channels)} ta kanal"
         else:
             text = "❌ Hali hech qanday kanal qo'shilmagan."
         
@@ -155,6 +198,77 @@ def handle_messages(message):
             message.chat.id,
             text,
             reply_markup=get_owner_main_keyboard()
+        )
+        return
+    
+    # Kanal o'chirish
+    if message.text == "🗑 Kanal o'chirish":
+        if channels:
+            user_states[user_id] = "deleting_channel"
+            text = "🗑 Qaysi kanalni o'chirmoqchisiz?\n\n"
+            for i, ch in enumerate(channels, 1):
+                text += f"{i}. {ch['name']} (ID: {ch['id']})\n"
+            text += "\nRaqamini kiriting:"
+            
+            bot.send_message(
+                message.chat.id,
+                text,
+                reply_markup=get_back_keyboard()
+            )
+        else:
+            bot.send_message(
+                message.chat.id,
+                "❌ O'chirish uchun kanallar yo'q!",
+                reply_markup=get_owner_main_keyboard()
+            )
+        return
+    
+    # Kanallarni export qilish
+    if message.text == "📤 Kanallarni export":
+        if channels:
+            try:
+                # JSON fayl yaratish
+                with tempfile.NamedTemporaryFile(mode='w', suffix='.json', 
+                                                delete=False, encoding='utf-8') as f:
+                    json.dump(channels, f, ensure_ascii=False, indent=2)
+                    temp_file_path = f.name
+                
+                # Faylni yuborish
+                with open(temp_file_path, 'rb') as f:
+                    bot.send_document(
+                        message.chat.id,
+                        f,
+                        caption=f"📤 Kanallar ro'yxati ({len(channels)} ta kanal)\n\n"
+                                f"Bu faylni saqlab qo'ying. Qayta import qilish uchun '📥 Kanallarni import' "
+                                f"tugmasini bosing va shu faylni yuboring.",
+                        reply_markup=get_owner_main_keyboard()
+                    )
+                
+                # Vaqtinchalik faylni o'chirish
+                os.unlink(temp_file_path)
+                
+            except Exception as e:
+                bot.send_message(
+                    message.chat.id,
+                    f"❌ Export qilishda xatolik: {str(e)}",
+                    reply_markup=get_owner_main_keyboard()
+                )
+        else:
+            bot.send_message(
+                message.chat.id,
+                "❌ Export qilish uchun kanallar yo'q!",
+                reply_markup=get_owner_main_keyboard()
+            )
+        return
+    
+    # Kanallarni import qilish
+    if message.text == "📥 Kanallarni import":
+        user_states[user_id] = "waiting_for_import"
+        bot.send_message(
+            message.chat.id,
+            "📥 Kanallar JSON faylini yuboring:\n\n"
+            "Oldin export qilingan faylni yuboring.",
+            reply_markup=get_back_keyboard()
         )
         return
     
@@ -294,7 +408,8 @@ def handle_messages(message):
                         channels.append(channel_info)
                         bot.send_message(
                             message.chat.id,
-                            f"✅ Kanal qo'shildi: {channel_info['name']}",
+                            f"✅ Kanal qo'shildi: {channel_info['name']}\n"
+                            f"📊 Jami kanallar: {len(channels)}",
                             reply_markup=get_owner_main_keyboard()
                         )
                     else:
@@ -324,6 +439,34 @@ def handle_messages(message):
                 message.chat.id,
                 f"❌ Xatolik: Kanal topilmadi yoki noto'g'ri ID.",
                 reply_markup=get_owner_main_keyboard()
+            )
+        return
+    
+    # Kanal o'chirish - raqam qabul qilish
+    if user_states.get(user_id) == "deleting_channel":
+        try:
+            index = int(message.text) - 1
+            if 0 <= index < len(channels):
+                deleted_channel = channels.pop(index)
+                del user_states[user_id]
+                
+                bot.send_message(
+                    message.chat.id,
+                    f"✅ '{deleted_channel['name']}' kanali o'chirildi!\n"
+                    f"📊 Qolgan kanallar: {len(channels)}",
+                    reply_markup=get_owner_main_keyboard()
+                )
+            else:
+                bot.send_message(
+                    message.chat.id,
+                    "❌ Noto'g'ri raqam! Qaytadan urinib ko'ring.",
+                    reply_markup=get_back_keyboard()
+                )
+        except ValueError:
+            bot.send_message(
+                message.chat.id,
+                "❌ Iltimos, raqam kiriting!",
+                reply_markup=get_back_keyboard()
             )
         return
     
@@ -419,7 +562,8 @@ def receive_post(message):
         "📝 Post yaratish", "➕ Kanal qo'shish", "📋 Kanallar ro'yxati",
         "⬅️ Bosh menyu", "🔗 Tugma qo'shish", "📋 Tugmalarni ko'rish",
         "🗑 Tugma o'chirish", "🔄 Hammasini tozalash", "📤 Post yuborish",
-        "❌ Bekor qilish"
+        "❌ Bekor qilish", "🗑 Kanal o'chirish", "📤 Kanallarni export",
+        "📥 Kanallarni import"
     ]:
         handle_messages(message)
         return
@@ -460,6 +604,10 @@ def handle_callback(call):
     
     # Kanallarni tanlash
     if call.data == "select_channels":
+        if not channels:
+            bot.answer_callback_query(call.id, "❌ Avval kanal qo'shing!")
+            return
+            
         if user_id not in current_posts:
             current_posts[user_id] = {'post_data': {}, 'buttons': [], 'selected_channels': []}
         if 'selected_channels' not in current_posts[user_id]:
@@ -485,6 +633,9 @@ def handle_callback(call):
     
     # Barchaga yuborish
     elif call.data == "send_all":
+        if not channels:
+            bot.answer_callback_query(call.id, "❌ Avval kanal qo'shing!")
+            return
         send_to_channels(call.message, user_id, 'all')
     
     # Tanlanganlarga yuborish
