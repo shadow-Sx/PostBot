@@ -66,13 +66,11 @@ def parse_button_text(text):
         if not line:
             continue
         
-        # Qatordagi tugmalarni ajratish
         row_buttons = []
         parts = line.split('|')
         
         for part in parts:
             part = part.strip()
-            # Format: Tugma nomi - URL - style:rang (ixtiyoriy)
             match = re.match(r'(.+?)\s*-\s*(https?://\S+)\s*(?:-\s*style:(\w+))?', part)
             if match:
                 name = match.group(1).strip()
@@ -91,6 +89,9 @@ def parse_button_text(text):
 
 def create_inline_keyboard(buttons):
     """Parsed tugmalardan inline keyboard yaratish"""
+    if not buttons:
+        return None
+    
     markup = types.InlineKeyboardMarkup(row_width=8)
     
     for row in buttons:
@@ -153,8 +154,17 @@ def import_channels_file(message):
         
         for channel in imported_channels:
             if 'id' in channel and 'name' in channel:
-                if not any(ch['id'] == channel['id'] for ch in channels):
-                    channels.append(channel)
+                # ID formatini tekshirish va to'g'irlash
+                channel_id = str(channel['id'])
+                if not channel_id.startswith('-100') and channel_id.startswith('-'):
+                    # Agar -100 bilan boshlanmasa, lekin minus bilan boshlansa
+                    pass  # O'z holida qoldiramiz
+                
+                if not any(ch['id'] == channel_id for ch in channels):
+                    channels.append({
+                        'id': channel_id,
+                        'name': channel['name']
+                    })
                     added_count += 1
                 else:
                     skipped_count += 1
@@ -166,14 +176,15 @@ def import_channels_file(message):
             f"✅ Kanallar import qilindi!\n\n"
             f"📥 Qo'shilgan: {added_count}\n"
             f"⏭ O'tkazib yuborilgan: {skipped_count}\n"
-            f"📊 Jami kanallar: {len(channels)}",
+            f"📊 Jami kanallar: {len(channels)}\n\n"
+            f"💡 Agar yuborishda xatolik bo'lsa, kanallarni o'chirib qayta qo'shing.",
             reply_markup=get_owner_main_keyboard()
         )
         
     except Exception as e:
         bot.send_message(
             message.chat.id,
-            f"❌ Xatolik: Noto'g'ri format yoki fayl buzilgan.",
+            f"❌ Xatolik: Noto'g'ri format yoki fayl buzilgan.\nXatolik: {str(e)}",
             reply_markup=get_owner_main_keyboard()
         )
 
@@ -202,7 +213,8 @@ def handle_messages(message):
         bot.send_message(
             message.chat.id,
             "📝 Post yuboring (matn, rasm, video, gif, sticker, fayl, ovozli xabar):\n\n"
-            "Matn HTML formatda bo'lishi mumkin!",
+            "Matn HTML formatda bo'lishi mumkin!\n"
+            "Sticker ham yubora olasiz!",
             reply_markup=get_back_keyboard()
         )
         return
@@ -214,7 +226,8 @@ def handle_messages(message):
             message.chat.id,
             "➕ Kanal ID sini kiriting:\n\n"
             "Masalan: @kanal_nomi yoki -1001234567890\n\n"
-            "Bot kanalda admin bo'lishi kerak!",
+            "Bot kanalda admin bo'lishi kerak!\n"
+            "Kanal ID sini @getmyid_bot orqali olishingiz mumkin.",
             reply_markup=get_back_keyboard()
         )
         return
@@ -224,8 +237,8 @@ def handle_messages(message):
         if channels:
             text = "📋 Mening kanallarim:\n\n"
             for i, ch in enumerate(channels, 1):
-                text += f"{i}. {ch['name']} (ID: {ch['id']})\n"
-            text += f"\n📊 Jami: {len(channels)} ta kanal"
+                text += f"{i}. {ch['name']}\n   ID: <code>{ch['id']}</code>\n\n"
+            text += f"📊 Jami: {len(channels)} ta kanal"
         else:
             text = "❌ Hali hech qanday kanal qo'shilmagan."
         
@@ -343,23 +356,30 @@ def handle_messages(message):
 def add_channel_handler(message):
     global channels
     user_id = message.from_user.id
-    channel_id = message.text.strip()
+    channel_input = message.text.strip()
     
     try:
-        chat = bot.get_chat(channel_id)
-        channel_info = {
-            'id': str(chat.id),
-            'name': chat.title or channel_id
-        }
+        # Kanal ma'lumotlarini olish
+        chat = bot.get_chat(channel_input)
         
+        # To'g'ri ID formatini saqlash
+        channel_id = str(chat.id)
+        channel_name = chat.title or channel_input
+        
+        # Bot adminligini tekshirish
         try:
             bot_member = bot.get_chat_member(chat.id, bot.get_me().id)
             if bot_member.status in ['administrator', 'creator']:
-                if not any(ch['id'] == channel_info['id'] for ch in channels):
-                    channels.append(channel_info)
+                if not any(ch['id'] == channel_id for ch in channels):
+                    channels.append({
+                        'id': channel_id,
+                        'name': channel_name
+                    })
                     bot.send_message(
                         message.chat.id,
-                        f"✅ Kanal qo'shildi: {channel_info['name']}\n"
+                        f"✅ Kanal qo'shildi!\n\n"
+                        f"📝 Nomi: {channel_name}\n"
+                        f"🆔 ID: <code>{channel_id}</code>\n"
                         f"📊 Jami kanallar: {len(channels)}",
                         reply_markup=get_owner_main_keyboard()
                     )
@@ -372,13 +392,19 @@ def add_channel_handler(message):
             else:
                 bot.send_message(
                     message.chat.id,
-                    "❌ Bot bu kanalda admin emas! Avval botni admin qiling.",
+                    "❌ Bot bu kanalda admin emas!\n\n"
+                    "1. Kanalga botni qo'shing\n"
+                    "2. Botni admin qiling\n"
+                    "3. Qaytadan kanal ID sini kiriting",
                     reply_markup=get_owner_main_keyboard()
                 )
-        except:
+        except Exception as e:
             bot.send_message(
                 message.chat.id,
-                "❌ Bot bu kanalga qo'shilmagan! Kanalga botni qo'shing va admin qiling.",
+                f"❌ Bot kanalga qo'shilmagan!\n\n"
+                f"1. Kanalga @{bot.get_me().username} botini qo'shing\n"
+                f"2. Botni admin qiling\n"
+                f"3. Qaytadan kanal ID sini kiriting",
                 reply_markup=get_owner_main_keyboard()
             )
         
@@ -388,7 +414,12 @@ def add_channel_handler(message):
     except Exception as e:
         bot.send_message(
             message.chat.id,
-            f"❌ Xatolik: Kanal topilmadi yoki noto'g'ri ID.",
+            f"❌ Xatolik: Kanal topilmadi yoki noto'g'ri ID.\n\n"
+            f"To'g'ri formatlar:\n"
+            f"• @kanal_nomi\n"
+            f"• -1001234567890\n\n"
+            f"Kanal ID sini @getmyid_bot orqali olishingiz mumkin.\n"
+            f"Xatolik: {str(e)}",
             reply_markup=get_owner_main_keyboard()
         )
 
@@ -448,8 +479,26 @@ def receive_post(message):
         'content_type': message.content_type,
         'from_chat_id': message.chat.id,
         'text': message.text if message.content_type == 'text' else message.caption,
-        'entities': message.entities if message.content_type == 'text' else message.caption_entities
+        'caption': message.caption,
     }
+    
+    # Media fayl ID sini saqlash
+    if message.content_type == 'photo':
+        post_data['file_id'] = message.photo[-1].file_id
+    elif message.content_type == 'video':
+        post_data['file_id'] = message.video.file_id
+    elif message.content_type == 'animation':
+        post_data['file_id'] = message.animation.file_id
+    elif message.content_type == 'sticker':
+        post_data['file_id'] = message.sticker.file_id
+    elif message.content_type == 'document':
+        post_data['file_id'] = message.document.file_id
+    elif message.content_type == 'audio':
+        post_data['file_id'] = message.audio.file_id
+    elif message.content_type == 'voice':
+        post_data['file_id'] = message.voice.file_id
+    elif message.content_type == 'video_note':
+        post_data['file_id'] = message.video_note.file_id
     
     if user_id not in current_posts:
         current_posts[user_id] = {}
@@ -462,77 +511,89 @@ def receive_post(message):
     user_states[user_id] = f"post_ready_{post_id}"
     
     # Postni qayta yuborish (copy)
-    if message.content_type == 'text':
-        # Matnli postni HTML formatda qayta yuborish
-        sent_message = bot.send_message(
+    try:
+        if message.content_type == 'text':
+            sent_message = bot.send_message(
+                message.chat.id,
+                message.text,
+                parse_mode='HTML',
+                reply_markup=get_post_management_keyboard(post_id)
+            )
+        elif message.content_type == 'photo':
+            sent_message = bot.send_photo(
+                message.chat.id,
+                post_data['file_id'],
+                caption=message.caption or "",
+                parse_mode='HTML' if message.caption else None,
+                reply_markup=get_post_management_keyboard(post_id)
+            )
+        elif message.content_type == 'video':
+            sent_message = bot.send_video(
+                message.chat.id,
+                post_data['file_id'],
+                caption=message.caption or "",
+                parse_mode='HTML' if message.caption else None,
+                reply_markup=get_post_management_keyboard(post_id)
+            )
+        elif message.content_type == 'animation':
+            sent_message = bot.send_animation(
+                message.chat.id,
+                post_data['file_id'],
+                caption=message.caption or "",
+                parse_mode='HTML' if message.caption else None,
+                reply_markup=get_post_management_keyboard(post_id)
+            )
+        elif message.content_type == 'sticker':
+            sent_message = bot.send_sticker(
+                message.chat.id,
+                post_data['file_id'],
+                reply_markup=get_post_management_keyboard(post_id)
+            )
+        elif message.content_type == 'document':
+            sent_message = bot.send_document(
+                message.chat.id,
+                post_data['file_id'],
+                caption=message.caption or "",
+                parse_mode='HTML' if message.caption else None,
+                reply_markup=get_post_management_keyboard(post_id)
+            )
+        elif message.content_type == 'audio':
+            sent_message = bot.send_audio(
+                message.chat.id,
+                post_data['file_id'],
+                caption=message.caption or "",
+                parse_mode='HTML' if message.caption else None,
+                reply_markup=get_post_management_keyboard(post_id)
+            )
+        elif message.content_type == 'voice':
+            sent_message = bot.send_voice(
+                message.chat.id,
+                post_data['file_id'],
+                caption=message.caption or "",
+                parse_mode='HTML' if message.caption else None,
+                reply_markup=get_post_management_keyboard(post_id)
+            )
+        elif message.content_type == 'video_note':
+            sent_message = bot.send_video_note(
+                message.chat.id,
+                post_data['file_id'],
+                reply_markup=get_post_management_keyboard(post_id)
+            )
+        
+        # Xabar ID sini yangilash
+        current_posts[user_id][post_id]['copy_message_id'] = sent_message.message_id
+        current_posts[user_id][post_id]['copy_chat_id'] = sent_message.chat.id
+        
+    except Exception as e:
+        bot.send_message(
             message.chat.id,
-            message.text,
-            parse_mode='HTML',
-            reply_markup=get_post_management_keyboard(post_id)
+            f"❌ Postni qayta yuborishda xatolik: {str(e)}",
+            reply_markup=get_owner_main_keyboard()
         )
-    elif message.content_type == 'photo':
-        sent_message = bot.send_photo(
-            message.chat.id,
-            message.photo[-1].file_id,
-            caption=message.caption,
-            parse_mode='HTML',
-            reply_markup=get_post_management_keyboard(post_id)
-        )
-    elif message.content_type == 'video':
-        sent_message = bot.send_video(
-            message.chat.id,
-            message.video.file_id,
-            caption=message.caption,
-            parse_mode='HTML',
-            reply_markup=get_post_management_keyboard(post_id)
-        )
-    elif message.content_type == 'animation':
-        sent_message = bot.send_animation(
-            message.chat.id,
-            message.animation.file_id,
-            caption=message.caption,
-            parse_mode='HTML',
-            reply_markup=get_post_management_keyboard(post_id)
-        )
-    elif message.content_type == 'sticker':
-        sent_message = bot.send_sticker(
-            message.chat.id,
-            message.sticker.file_id,
-            reply_markup=get_post_management_keyboard(post_id)
-        )
-    elif message.content_type == 'document':
-        sent_message = bot.send_document(
-            message.chat.id,
-            message.document.file_id,
-            caption=message.caption,
-            parse_mode='HTML',
-            reply_markup=get_post_management_keyboard(post_id)
-        )
-    elif message.content_type == 'audio':
-        sent_message = bot.send_audio(
-            message.chat.id,
-            message.audio.file_id,
-            caption=message.caption,
-            parse_mode='HTML',
-            reply_markup=get_post_management_keyboard(post_id)
-        )
-    elif message.content_type == 'voice':
-        sent_message = bot.send_voice(
-            message.chat.id,
-            message.voice.file_id,
-            caption=message.caption,
-            parse_mode='HTML',
-            reply_markup=get_post_management_keyboard(post_id)
-        )
-    elif message.content_type == 'video_note':
-        sent_message = bot.send_video_note(
-            message.chat.id,
-            message.video_note.file_id,
-            reply_markup=get_post_management_keyboard(post_id)
-        )
-    
-    # Xabar ID sini yangilash
-    current_posts[user_id][post_id]['copy_message_id'] = sent_message.message_id
+        if user_id in current_posts and post_id in current_posts[user_id]:
+            del current_posts[user_id][post_id]
+        if user_id in user_states:
+            del user_states[user_id]
 
 # Callback handler
 @bot.callback_query_handler(func=lambda call: True)
@@ -586,6 +647,10 @@ def handle_callback(call):
             bot.answer_callback_query(call.id, "❌ Post topilmadi!")
             return
         
+        if not channels:
+            bot.answer_callback_query(call.id, "❌ Avval kanal qo'shing!")
+            return
+        
         # Inline keyboard yaratish
         markup = types.InlineKeyboardMarkup(row_width=2)
         btn_select = types.InlineKeyboardButton("🎯 Tanlash", callback_data=f"select_{post_id}")
@@ -596,17 +661,27 @@ def handle_callback(call):
         
         buttons_count = len(current_posts[user_id][post_id]['buttons'])
         
-        bot.edit_message_caption(
-            caption=f"📤 Yuborishga tayyormisiz?\n\n📝 Tugmalar: {buttons_count} ta",
-            chat_id=call.message.chat.id,
-            message_id=call.message.message_id,
-            reply_markup=markup
-        ) if call.message.caption else bot.edit_message_text(
-            f"📤 Yuborishga tayyormisiz?\n\n📝 Tugmalar: {buttons_count} ta",
-            call.message.chat.id,
-            call.message.message_id,
-            reply_markup=markup
-        )
+        try:
+            if call.message.content_type == 'text':
+                bot.edit_message_text(
+                    f"📤 Yuborishga tayyormisiz?\n\n📝 Tugmalar: {buttons_count} ta",
+                    call.message.chat.id,
+                    call.message.message_id,
+                    reply_markup=markup
+                )
+            else:
+                bot.edit_message_caption(
+                    caption=f"📤 Yuborishga tayyormisiz?\n\n📝 Tugmalar: {buttons_count} ta",
+                    chat_id=call.message.chat.id,
+                    message_id=call.message.message_id,
+                    reply_markup=markup
+                )
+        except:
+            bot.edit_message_reply_markup(
+                call.message.chat.id,
+                call.message.message_id,
+                reply_markup=markup
+            )
     
     # Kanallarni tanlash
     elif call.data.startswith("select_"):
@@ -666,11 +741,15 @@ def handle_callback(call):
         if user_id in current_posts and post_id in current_posts[user_id]:
             del current_posts[user_id][post_id]
         
-        bot.edit_message_text(
-            "❌ Post o'chirildi.",
-            call.message.chat.id,
-            call.message.message_id
-        )
+        try:
+            bot.edit_message_text(
+                "❌ Post o'chirildi.",
+                call.message.chat.id,
+                call.message.message_id
+            )
+        except:
+            bot.delete_message(call.message.chat.id, call.message.message_id)
+        
         bot.send_message(
             call.message.chat.id,
             "👋 Bosh menyu",
@@ -680,22 +759,20 @@ def handle_callback(call):
     elif call.data.startswith("cancelsend_"):
         post_id = call.data.replace("cancelsend_", "")
         
-        # Qayta ko'rsatish
-        if user_id in current_posts and post_id in current_posts[user_id]:
-            try:
-                bot.edit_message_reply_markup(
-                    call.message.chat.id,
-                    call.message.message_id,
-                    reply_markup=get_post_management_keyboard(post_id)
-                )
-            except:
-                pass
+        try:
+            bot.edit_message_reply_markup(
+                call.message.chat.id,
+                call.message.message_id,
+                reply_markup=get_post_management_keyboard(post_id)
+            )
+        except:
+            pass
     
     # Kanal tanlash
     elif call.data.startswith("toggle_"):
-        parts = call.data.split("_")
+        parts = call.data.split("_", 2)
         post_id = parts[1]
-        channel_id = "_".join(parts[2:]) if len(parts) > 3 else parts[2]
+        channel_id = parts[2] if len(parts) > 2 else ""
         
         if user_id not in current_posts:
             current_posts[user_id] = {}
@@ -722,12 +799,15 @@ def handle_callback(call):
         btn_back = types.InlineKeyboardButton("⬅️ Bekor qilish", callback_data=f"cancelsend_{post_id}")
         markup.add(btn_done, btn_back)
         
-        bot.edit_message_text(
-            "🎯 Qaysi kanallarga yuboramiz?",
-            call.message.chat.id,
-            call.message.message_id,
-            reply_markup=markup
-        )
+        try:
+            bot.edit_message_text(
+                "🎯 Qaysi kanallarga yuboramiz?",
+                call.message.chat.id,
+                call.message.message_id,
+                reply_markup=markup
+            )
+        except:
+            pass
 
 # Kanallarga yuborish
 def send_to_channels(message, user_id, post_id, send_type):
@@ -739,9 +819,7 @@ def send_to_channels(message, user_id, post_id, send_type):
     buttons = current_posts[user_id][post_id].get('buttons', [])
     
     # Inline keyboard yaratish
-    inline_markup = None
-    if buttons:
-        inline_markup = create_inline_keyboard(buttons)
+    inline_markup = create_inline_keyboard(buttons)
     
     if send_type == 'all':
         target_channels = channels
@@ -754,66 +832,106 @@ def send_to_channels(message, user_id, post_id, send_type):
     
     for channel in target_channels:
         try:
-            # Postni content type bo'yicha yuborish
             content_type = post_data['content_type']
-            sent_msg = None
+            channel_id = int(channel['id'])  # ID ni int ga o'tkazish
             
             if content_type == 'text':
-                sent_msg = bot.send_message(
-                    chat_id=channel['id'],
+                bot.send_message(
+                    chat_id=channel_id,
                     text=post_data['text'],
                     parse_mode='HTML',
                     reply_markup=inline_markup
                 )
             elif content_type == 'photo':
-                sent_msg = bot.send_photo(
-                    chat_id=channel['id'],
-                    photo=post_data.get('file_id'),
-                    caption=post_data.get('text'),
-                    parse_mode='HTML',
+                bot.send_photo(
+                    chat_id=channel_id,
+                    photo=post_data['file_id'],
+                    caption=post_data.get('caption') or "",
+                    parse_mode='HTML' if post_data.get('caption') else None,
                     reply_markup=inline_markup
                 )
             elif content_type == 'video':
-                sent_msg = bot.send_video(
-                    chat_id=channel['id'],
-                    video=post_data.get('file_id'),
-                    caption=post_data.get('text'),
-                    parse_mode='HTML',
+                bot.send_video(
+                    chat_id=channel_id,
+                    video=post_data['file_id'],
+                    caption=post_data.get('caption') or "",
+                    parse_mode='HTML' if post_data.get('caption') else None,
                     reply_markup=inline_markup
                 )
-            else:
-                # Boshqa kontent turlari uchun forward qilish
-                sent_msg = bot.forward_message(
-                    chat_id=channel['id'],
-                    from_chat_id=post_data['from_chat_id'],
-                    message_id=post_data['message_id']
+            elif content_type == 'animation':
+                bot.send_animation(
+                    chat_id=channel_id,
+                    animation=post_data['file_id'],
+                    caption=post_data.get('caption') or "",
+                    parse_mode='HTML' if post_data.get('caption') else None,
+                    reply_markup=inline_markup
                 )
-                
-                # Agar tugmalar bo'lsa, qo'shimcha xabar
-                if inline_markup and content_type not in ['text']:
-                    bot.send_message(
-                        chat_id=channel['id'],
-                        text="🔗 Havolalar:",
-                        reply_markup=inline_markup,
-                        reply_to_message_id=sent_msg.message_id
-                    )
+            elif content_type == 'sticker':
+                bot.send_sticker(
+                    chat_id=channel_id,
+                    sticker=post_data['file_id'],
+                    reply_markup=inline_markup
+                )
+            elif content_type == 'document':
+                bot.send_document(
+                    chat_id=channel_id,
+                    document=post_data['file_id'],
+                    caption=post_data.get('caption') or "",
+                    parse_mode='HTML' if post_data.get('caption') else None,
+                    reply_markup=inline_markup
+                )
+            elif content_type == 'audio':
+                bot.send_audio(
+                    chat_id=channel_id,
+                    audio=post_data['file_id'],
+                    caption=post_data.get('caption') or "",
+                    parse_mode='HTML' if post_data.get('caption') else None,
+                    reply_markup=inline_markup
+                )
+            elif content_type == 'voice':
+                bot.send_voice(
+                    chat_id=channel_id,
+                    voice=post_data['file_id'],
+                    caption=post_data.get('caption') or "",
+                    parse_mode='HTML' if post_data.get('caption') else None,
+                    reply_markup=inline_markup
+                )
+            elif content_type == 'video_note':
+                bot.send_video_note(
+                    chat_id=channel_id,
+                    video_note=post_data['file_id'],
+                    reply_markup=inline_markup
+                )
             
             sent_count += 1
+            time.sleep(0.5)  # Flood wait oldini olish
+            
         except Exception as e:
-            failed_channels.append(f"{channel['name']}: {str(e)}")
+            failed_channels.append(f"{channel['name']}: {str(e)[:100]}")
     
     # Natijani ko'rsatish
     result_text = f"✅ {sent_count}/{len(target_channels)} kanalga yuborildi!"
     if failed_channels:
         result_text += "\n\n❌ Xatoliklar:\n"
-        for fail in failed_channels[:5]:  # Faqat 5 ta xatolik
+        for fail in failed_channels[:5]:
             result_text += f"• {fail}\n"
+        
+        if len(failed_channels) > 5:
+            result_text += f"• ...va yana {len(failed_channels) - 5} ta xatolik\n"
+        
+        result_text += "\n💡 Yechim:\n"
+        result_text += "1. Kanallarni o'chirib qayta qo'shing\n"
+        result_text += "2. Bot kanalda admin ekanligini tekshiring\n"
+        result_text += "3. Kanal ID sini @getmyid_bot orqali oling"
     
-    bot.edit_message_text(
-        result_text,
-        message.chat.id,
-        message.message_id
-    )
+    try:
+        bot.edit_message_text(
+            result_text,
+            message.chat.id,
+            message.message_id
+        )
+    except:
+        bot.send_message(message.chat.id, result_text)
     
     bot.send_message(
         message.chat.id,
