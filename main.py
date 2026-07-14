@@ -56,6 +56,13 @@ def get_back_keyboard():
 def is_owner(user_id):
     return user_id == OWNER_ID
 
+def fix_url(url):
+    """URL ni to'g'irlash - https:// qo'shish"""
+    url = url.strip()
+    if not url.startswith('http://') and not url.startswith('https://'):
+        url = 'https://' + url
+    return url
+
 def parse_button_text(text):
     """Tugma matnini parse qilish"""
     buttons = []
@@ -71,11 +78,17 @@ def parse_button_text(text):
         
         for part in parts:
             part = part.strip()
-            match = re.match(r'(.+?)\s*-\s*(https?://\S+)\s*(?:-\s*style:(\w+))?', part)
+            # Format: Tugma nomi - URL - style:rang (ixtiyoriy)
+            # URL bo'sh joy bo'lishi mumkin emas
+            match = re.match(r'(.+?)\s*-\s*(\S+)\s*(?:-\s*style:(\w+))?', part)
             if match:
                 name = match.group(1).strip()
                 url = match.group(2).strip()
                 color = match.group(3) or 'default'
+                
+                # URL ni to'g'irlash
+                url = fix_url(url)
+                
                 row_buttons.append({
                     'name': name,
                     'url': url,
@@ -154,11 +167,7 @@ def import_channels_file(message):
         
         for channel in imported_channels:
             if 'id' in channel and 'name' in channel:
-                # ID formatini tekshirish va to'g'irlash
                 channel_id = str(channel['id'])
-                if not channel_id.startswith('-100') and channel_id.startswith('-'):
-                    # Agar -100 bilan boshlanmasa, lekin minus bilan boshlansa
-                    pass  # O'z holida qoldiramiz
                 
                 if not any(ch['id'] == channel_id for ch in channels):
                     channels.append({
@@ -176,15 +185,14 @@ def import_channels_file(message):
             f"✅ Kanallar import qilindi!\n\n"
             f"📥 Qo'shilgan: {added_count}\n"
             f"⏭ O'tkazib yuborilgan: {skipped_count}\n"
-            f"📊 Jami kanallar: {len(channels)}\n\n"
-            f"💡 Agar yuborishda xatolik bo'lsa, kanallarni o'chirib qayta qo'shing.",
+            f"📊 Jami kanallar: {len(channels)}",
             reply_markup=get_owner_main_keyboard()
         )
         
     except Exception as e:
         bot.send_message(
             message.chat.id,
-            f"❌ Xatolik: Noto'g'ri format yoki fayl buzilgan.\nXatolik: {str(e)}",
+            f"❌ Xatolik: {str(e)}",
             reply_markup=get_owner_main_keyboard()
         )
 
@@ -226,8 +234,7 @@ def handle_messages(message):
             message.chat.id,
             "➕ Kanal ID sini kiriting:\n\n"
             "Masalan: @kanal_nomi yoki -1001234567890\n\n"
-            "Bot kanalda admin bo'lishi kerak!\n"
-            "Kanal ID sini @getmyid_bot orqali olishingiz mumkin.",
+            "Bot kanalda admin bo'lishi kerak!",
             reply_markup=get_back_keyboard()
         )
         return
@@ -295,7 +302,7 @@ def handle_messages(message):
         )
         return
     
-    # Tugma qo'shish uchun matn qabul qilish
+    # Tugma qo'shish uchun matn qabul qilish (faqat "waiting_for_buttons_" holatida)
     if user_states.get(user_id, "").startswith("waiting_for_buttons_"):
         post_id = user_states[user_id].replace("waiting_for_buttons_", "")
         
@@ -306,9 +313,14 @@ def handle_messages(message):
                 bot.send_message(
                     message.chat.id,
                     "❌ Noto'g'ri format! Qaytadan urinib ko'ring:\n\n"
-                    "Tugma 1 - http://example1.com\n"
-                    "Tugma 2 - http://example2.com - style:green\n"
-                    "Tugma 3 - http://example3.com | Tugma 4 - http://example4.com",
+                    "<b>Format:</b>\n"
+                    "<code>Tugma 1 - example1.com</code>\n"
+                    "<code>Tugma 2 - example2.com - style:green</code>\n\n"
+                    "<b>Bir qatorga bir nechta tugma:</b>\n"
+                    "<code>Tugma 1 - example1.com | Tugma 2 - example2.com</code>\n\n"
+                    "<b>Ranglar:</b> green, blue, red (ixtiyoriy)\n"
+                    "<b>Eslatma:</b> https:// qo'shish shart emas, avtomatik qo'shiladi!",
+                    parse_mode='HTML',
                     reply_markup=get_back_keyboard()
                 )
                 return
@@ -359,14 +371,10 @@ def add_channel_handler(message):
     channel_input = message.text.strip()
     
     try:
-        # Kanal ma'lumotlarini olish
         chat = bot.get_chat(channel_input)
-        
-        # To'g'ri ID formatini saqlash
         channel_id = str(chat.id)
         channel_name = chat.title or channel_input
         
-        # Bot adminligini tekshirish
         try:
             bot_member = bot.get_chat_member(chat.id, bot.get_me().id)
             if bot_member.status in ['administrator', 'creator']:
@@ -392,19 +400,13 @@ def add_channel_handler(message):
             else:
                 bot.send_message(
                     message.chat.id,
-                    "❌ Bot bu kanalda admin emas!\n\n"
-                    "1. Kanalga botni qo'shing\n"
-                    "2. Botni admin qiling\n"
-                    "3. Qaytadan kanal ID sini kiriting",
+                    "❌ Bot bu kanalda admin emas! Botni admin qiling.",
                     reply_markup=get_owner_main_keyboard()
                 )
-        except Exception as e:
+        except:
             bot.send_message(
                 message.chat.id,
-                f"❌ Bot kanalga qo'shilmagan!\n\n"
-                f"1. Kanalga @{bot.get_me().username} botini qo'shing\n"
-                f"2. Botni admin qiling\n"
-                f"3. Qaytadan kanal ID sini kiriting",
+                f"❌ Bot kanalga qo'shilmagan! Kanalga botni qo'shing va admin qiling.",
                 reply_markup=get_owner_main_keyboard()
             )
         
@@ -414,12 +416,7 @@ def add_channel_handler(message):
     except Exception as e:
         bot.send_message(
             message.chat.id,
-            f"❌ Xatolik: Kanal topilmadi yoki noto'g'ri ID.\n\n"
-            f"To'g'ri formatlar:\n"
-            f"• @kanal_nomi\n"
-            f"• -1001234567890\n\n"
-            f"Kanal ID sini @getmyid_bot orqali olishingiz mumkin.\n"
-            f"Xatolik: {str(e)}",
+            f"❌ Kanal topilmadi yoki noto'g'ri ID.",
             reply_markup=get_owner_main_keyboard()
         )
 
@@ -442,7 +439,7 @@ def delete_channel_handler(message):
         else:
             bot.send_message(
                 message.chat.id,
-                "❌ Noto'g'ri raqam! Qaytadan urinib ko'ring.",
+                "❌ Noto'g'ri raqam!",
                 reply_markup=get_back_keyboard()
             )
     except ValueError:
@@ -460,14 +457,29 @@ def delete_channel_handler(message):
 def receive_post(message):
     user_id = message.from_user.id
     
-    # Agar matn bo'lsa va buyruq bo'lmasa
-    if message.content_type == 'text' and message.text in [
-        "📝 Post yaratish", "➕ Kanal qo'shish", "📋 Kanallar ro'yxati",
-        "⬅️ Bosh menyu", "🗑 Kanal o'chirish", "📤 Kanallarni export",
-        "📥 Kanallarni import"
-    ]:
-        handle_messages(message)
-        return
+    # Tugma qo'shish komandalarini tekshirish
+    if message.content_type == 'text':
+        if message.text in [
+            "📝 Post yaratish", "➕ Kanal qo'shish", "📋 Kanallar ro'yxati",
+            "⬅️ Bosh menyu", "🗑 Kanal o'chirish", "📤 Kanallarni export",
+            "📥 Kanallarni import"
+        ]:
+            handle_messages(message)
+            return
+        
+        # Agar text "Tugma - url" formatida bo'lsa va post yaratish bosqichida bo'lsa
+        # uni post emas, balki ogohlantirish sifatida qabul qilish
+        if re.match(r'.+\s*-\s*\S+', message.text) and not message.text.startswith('/'):
+            # Bu tugma formati bo'lishi mumkin, lekin post yaratish bosqichida
+            # foydalanuvchiga ogohlantirish beramiz
+            bot.send_message(
+                message.chat.id,
+                "⚠️ Bu tugma formatiga o'xshaydi. Agar post yaratmoqchi bo'lsangiz, "
+                "iltimos, post kontentini yuboring.\n\n"
+                "Tugma qo'shish uchun avval post yarating, keyin '+' tugmasini bosing.",
+                reply_markup=get_back_keyboard()
+            )
+            return
     
     # Post ID yaratish
     post_id = str(int(time.time()))
@@ -491,6 +503,8 @@ def receive_post(message):
         post_data['file_id'] = message.animation.file_id
     elif message.content_type == 'sticker':
         post_data['file_id'] = message.sticker.file_id
+        post_data['sticker_emoji'] = message.sticker.emoji
+        post_data['sticker_set_name'] = message.sticker.set_name
     elif message.content_type == 'document':
         post_data['file_id'] = message.document.file_id
     elif message.content_type == 'audio':
@@ -512,6 +526,8 @@ def receive_post(message):
     
     # Postni qayta yuborish (copy)
     try:
+        sent_message = None
+        
         if message.content_type == 'text':
             sent_message = bot.send_message(
                 message.chat.id,
@@ -580,9 +596,9 @@ def receive_post(message):
                 reply_markup=get_post_management_keyboard(post_id)
             )
         
-        # Xabar ID sini yangilash
-        current_posts[user_id][post_id]['copy_message_id'] = sent_message.message_id
-        current_posts[user_id][post_id]['copy_chat_id'] = sent_message.chat.id
+        if sent_message:
+            current_posts[user_id][post_id]['copy_message_id'] = sent_message.message_id
+            current_posts[user_id][post_id]['copy_chat_id'] = sent_message.chat.id
         
     except Exception as e:
         bot.send_message(
@@ -613,11 +629,12 @@ def handle_callback(call):
             call.message.chat.id,
             "📝 Tugmalarni quyidagi formatda yuboring:\n\n"
             "<b>Format:</b>\n"
-            "<code>Tugma 1 - http://example1.com</code>\n"
-            "<code>Tugma 2 - http://example2.com - style:green</code>\n\n"
+            "<code>Tugma 1 - example1.com</code>\n"
+            "<code>Tugma 2 - example2.com - style:green</code>\n\n"
             "<b>Bir qatorga bir nechta tugma:</b>\n"
-            "<code>Tugma 1 - http://example1.com | Tugma 2 - http://example2.com</code>\n\n"
-            "<b>Ranglar:</b> green, blue, red (ixtiyoriy)",
+            "<code>Tugma 1 - example1.com | Tugma 2 - example2.com</code>\n\n"
+            "<b>Ranglar:</b> green, blue, red (ixtiyoriy)\n"
+            "<b>Eslatma:</b> https:// qo'shish shart emas, avtomatik qo'shiladi!",
             parse_mode='HTML'
         )
         bot.answer_callback_query(call.id)
@@ -651,7 +668,6 @@ def handle_callback(call):
             bot.answer_callback_query(call.id, "❌ Avval kanal qo'shing!")
             return
         
-        # Inline keyboard yaratish
         markup = types.InlineKeyboardMarkup(row_width=2)
         btn_select = types.InlineKeyboardButton("🎯 Tanlash", callback_data=f"select_{post_id}")
         btn_all = types.InlineKeyboardButton("📢 Barchaga", callback_data=f"sendall_{post_id}")
@@ -670,12 +686,19 @@ def handle_callback(call):
                     reply_markup=markup
                 )
             else:
-                bot.edit_message_caption(
-                    caption=f"📤 Yuborishga tayyormisiz?\n\n📝 Tugmalar: {buttons_count} ta",
-                    chat_id=call.message.chat.id,
-                    message_id=call.message.message_id,
-                    reply_markup=markup
-                )
+                try:
+                    bot.edit_message_caption(
+                        caption=f"📤 Yuborishga tayyormisiz?\n\n📝 Tugmalar: {buttons_count} ta",
+                        chat_id=call.message.chat.id,
+                        message_id=call.message.message_id,
+                        reply_markup=markup
+                    )
+                except:
+                    bot.edit_message_reply_markup(
+                        call.message.chat.id,
+                        call.message.message_id,
+                        reply_markup=markup
+                    )
         except:
             bot.edit_message_reply_markup(
                 call.message.chat.id,
@@ -833,7 +856,7 @@ def send_to_channels(message, user_id, post_id, send_type):
     for channel in target_channels:
         try:
             content_type = post_data['content_type']
-            channel_id = int(channel['id'])  # ID ni int ga o'tkazish
+            channel_id = int(channel['id'])
             
             if content_type == 'text':
                 bot.send_message(
@@ -904,7 +927,7 @@ def send_to_channels(message, user_id, post_id, send_type):
                 )
             
             sent_count += 1
-            time.sleep(0.5)  # Flood wait oldini olish
+            time.sleep(0.5)
             
         except Exception as e:
             failed_channels.append(f"{channel['name']}: {str(e)[:100]}")
@@ -915,14 +938,6 @@ def send_to_channels(message, user_id, post_id, send_type):
         result_text += "\n\n❌ Xatoliklar:\n"
         for fail in failed_channels[:5]:
             result_text += f"• {fail}\n"
-        
-        if len(failed_channels) > 5:
-            result_text += f"• ...va yana {len(failed_channels) - 5} ta xatolik\n"
-        
-        result_text += "\n💡 Yechim:\n"
-        result_text += "1. Kanallarni o'chirib qayta qo'shing\n"
-        result_text += "2. Bot kanalda admin ekanligini tekshiring\n"
-        result_text += "3. Kanal ID sini @getmyid_bot orqali oling"
     
     try:
         bot.edit_message_text(
